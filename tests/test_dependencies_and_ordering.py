@@ -1,0 +1,57 @@
+"""Tests for dependency rules, violation detection, and ordering reconstruction."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import random
+
+from twinstep.baseline import predict_order
+from twinstep.dependencies import check_constraints, find_dependencies, find_order_violations
+from twinstep.injectors import make_ordering_record
+from twinstep.schema import IncubateStep, MixStep, ReadStep, TransferStep, load_protocol
+
+EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
+
+
+def test_clean_examples_have_no_order_violations() -> None:
+    for path in sorted(EXAMPLES_DIR.glob("*.json")):
+        proto = load_protocol(path)
+        assert find_order_violations(proto.steps) == []
+
+
+def test_independent_buffer_transfers_are_unconstrained() -> None:
+    proto = load_protocol(EXAMPLES_DIR / "dilution_series.json")
+    deps = set(find_dependencies(proto.steps))
+    # Steps 0..3 dispense buffer into A1..A4 independently; no edges among them.
+    for i in range(4):
+        for j in range(i + 1, 4):
+            assert (i, j) not in deps
+    # Serial chain A1 -> A2 -> A3 -> A4 -> read must be constrained.
+    assert (5, 6) in deps  # mix A1 -> transfer A1->A2
+    assert (6, 7) in deps  # transfer A1->A2 -> mix A2
+    assert (11, 12) in deps  # mix A4 -> read plate1
+
+
+def test_detects_read_before_incubate_and_mix_before_transfer() -> None:
+    steps = [
+        TransferStep(source="reservoir:buffer", dest="plate1:A1", volume=100, unit="uL"),
+        ReadStep(plate="plate1", mode="absorbance", wavelength=450),
+        IncubateStep(plate="plate1", temperature=37, time=20, time_unit="min"),
+        MixStep(well="plate1:A2", volume=50, unit="uL", cycles=3),
+        TransferStep(source="reservoir:dye", dest="plate1:A2", volume=50, unit="uL"),
+    ]
+    violations = find_order_violations(steps)
+    reasons = " | ".join(v[2] for v in violations)
+    assert "reads plate1 before" in reasons
+    assert "mixes plate1:A2 before" in reasons
+
+
+def test_ordering_baseline_satisfies_constraints_across_shuffles() -> None:
+    rng = random.Random(123)
+    for path in sorted(EXAMPLES_DIR.glob("*.json")):
+        proto = load_protocol(path)
+        for idx in range(5):
+            rec = make_ordering_record(proto, rng, record_id=f"{proto.protocol_id}:{idx}")
+            pred = predict_order(rec.shuffled_steps)
+            constraints = [(a, b) for a, b in rec.constraints]
+            assert check_constraints(pred, constraints)

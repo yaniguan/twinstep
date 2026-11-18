@@ -1,0 +1,10 @@
+[
+  {"type": "transfer", "source": "reservoir:buffer", "dest": "plate1:B1", "volume": 150, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:buffer", "dest": "plate1:B2", "volume": 150, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:dye", "dest": "plate1:B1", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:dye", "dest": "plate1:B2", "volume": 50, "unit": "uL"},
+  {"type": "mix", "well": "plate1:B1", "volume": 100, "unit": "uL", "cycles": 4},
+  {"type": "mix", "well": "plate1:B2", "volume": 100, "unit": "uL", "cycles": 4},
+  {"type": "wash", "plate": "plate1", "volume": 300, "unit": "uL", "cycles": 3},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 595}
+]

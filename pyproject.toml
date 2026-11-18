@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twinstep"
+version = "0.1.0"
+description = "Seeded-error twin generator for generic liquid-handling protocol steps"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Yani Guan" }]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
+dev = ["pytest>=8.0", "pyyaml>=6.0"]
+
+[project.scripts]
+twinstep = "twinstep.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
