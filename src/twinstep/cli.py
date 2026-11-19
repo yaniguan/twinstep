@@ -90,7 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     gen = sub.add_parser("generate", help="Generate error-detection and ordering JSONL twins.")
     gen.add_argument("protocols", nargs="+", help="Input protocol JSON or YAML files.")
     gen.add_argument("--n", type=int, default=5, help="Corrupted twins per protocol (default: 5).")
-    gen.add_argument("--clean", type=int, default=1, help="Clean negatives per protocol (default: 1).")
+    gen.add_argument("--clean", type=int, default=1, help="Emit one clean negative per protocol when > 0 (default: 1); 0 disables.",
+    )
     gen.add_argument(
         "--ordering",
         type=int,

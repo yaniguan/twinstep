@@ -49,13 +49,13 @@ $ twinstep baseline twins.jsonl -o preds.jsonl
 Wrote 33 baseline predictions to preds.jsonl
 
 $ twinstep eval twins.jsonl preds.jsonl
-Error detection: 13/18 (72.2%) | step_index: 8/15 (53.3%)
+Error detection: 14/18 (77.8%) | step_index: 9/15 (60.0%)
   - clean             :   3/3   (100.0%)
-  - missing_step      :   1/4   (25.0%)
+  - missing_step      :   1/3   (33.3%)
   - swap_order        :   4/4   (100.0%)
   - wrong_time        :   0/1   (0.0%)
   - wrong_unit        :   3/3   (100.0%)
-  - wrong_volume      :   2/3   (66.7%)
+  - wrong_volume      :   3/4   (75.0%)
 Ordering: constraints 15/15 (100.0%) | exact 0/15 (0.0%) | pairwise 130/130 (100.0%)
 ```
 
@@ -63,19 +63,22 @@ Larger sample covering all six error types (`--n 20 --clean 4 --seed 0`):
 
 ```text
 $ twinstep generate examples/*.json --n 20 --clean 4 --seed 0 -o twins20.jsonl
-Wrote 132 records from 3 protocols to twins20.jsonl
+UserWarning: protocol 'mix_incubate_read': no new distinct 'wrong_time' twin after 50 draws; no longer drawing this type
+Wrote 123 records from 3 protocols to twins20.jsonl
 
 $ twinstep eval twins20.jsonl --baseline
-Error detection: 48/72 (66.7%) | step_index: 34/60 (56.7%)
-  - clean             :  12/12  (100.0%)
-  - missing_step      :   1/14  (7.1%)
-  - swap_order        :  10/13  (76.9%)
-  - wrong_temperature :   1/3   (33.3%)
-  - wrong_time        :   3/4   (75.0%)
+Error detection: 43/63 (68.3%) | step_index: 33/60 (55.0%)
+  - clean             :   3/3   (100.0%)
+  - missing_step      :   3/14  (21.4%)
+  - swap_order        :  14/14  (100.0%)
+  - wrong_temperature :   2/4   (50.0%)
+  - wrong_time        :   1/2   (50.0%)
   - wrong_unit        :  13/13  (100.0%)
-  - wrong_volume      :   8/13  (61.5%)
-Ordering: constraints 60/60 (100.0%) | exact 1/60 (1.7%) | pairwise 520/520 (100.0%)
+  - wrong_volume      :   7/13  (53.8%)
+Ordering: constraints 60/60 (100.0%) | exact 0/60 (0.0%) | pairwise 520/520 (100.0%)
 ```
+
+Twins within a protocol always have distinct `corrupted_steps`. `mix_incubate_read` has a single 30 min incubation, so `wrong_time` can only produce `30 s` or `300 min`; once both are drawn the type is retired with a warning and the remaining slots go to other error types. `--clean` emits one clean negative per protocol for any value above 0, because extra copies would be identical.
 
 ## How It Works
 
@@ -109,7 +112,7 @@ Each injector in `twinstep.injectors` is seeded with `--seed` and guaranteed to 
 
 `twinstep.baseline` inspects only the candidate `corrupted_steps` (or `shuffled_steps`) without access to `correct_steps` or `gold_order`:
 
-- Flags dependency violations (`read` before `incubate`/`mix`, mixing or transferring from a well before filling it, mixing before a later addition without re-mixing).
+- Flags dependency violations (`read` before `incubate`/`mix`, including across an intervening plate wash; `mix` or `transfer` on a plate after a whole-plate wash with no `read` in between; mixing or transferring from a well before filling it; mixing before a later addition without re-mixing).
 - Checks per-step-type volume bounds (`[1, 300] uL` for well `transfer`/`mix`, `[50, 2000] uL` for `wash`), unit mismatches, temperature bounds (`[4, 95] C`), and duration bounds (`[5, 600] s` or `[1, 180] min`).
 - Flags uninitialized/unmixed wells or a missing `read` step as `missing_step`.
 - Reconstructs step ordering via topological sort over well liquid-flow edges and plate-stage barriers (`transfer` -> `mix` -> `incubate` -> `wash` -> `read`).
@@ -118,7 +121,7 @@ Each injector in `twinstep.injectors` is seeded with `--seed` and guaranteed to 
 
 - **Ordering metrics**: many step orders are valid, so `exact` (same order as the original file) is strict and low for the baseline. `constraints` and `pairwise` count only the dependency pairs that must hold.
 - **Stateless single-protocol checks**: the rule-based baseline cannot detect subtle in-range errors (such as `100 uL -> 10 uL`, `37 C -> 62 C`, `30 min -> 30 s`, or dropping an independent buffer dispense) without a reference specification.
-- **Dependency assumptions**: ordering constraints model single-plate stage barriers and well-level liquid flow (`reservoir:`/`stock:`/`trough:`/`waste` prefixes are treated as external sources/sinks). Multi-stage protocols that wash, dispense, and wash again are simplified by the stage-ranked ordering baseline.
+- **Dependency assumptions**: ordering constraints model single-plate stage barriers and well-level liquid flow (`reservoir:`/`stock:`/`trough:`/`waste` prefixes are treated as external sources/sinks). Multi-stage protocols that wash, dispense, and wash again are simplified by the stage-ranked ordering baseline. The checker treats a dispense after a whole-plate wash as an error unless the plate was already read before that wash (a new read cycle), so protocols that pre-wash a plate or wash between reagent additions will be flagged.
 - **Generic scope**: schemas and examples cover generic liquid handling only (water, buffer, dye, dilution series, plate reads).
 
 ## License

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import random
+import warnings
+
 import pytest
 
 from twinstep.dependencies import check_constraints
@@ -14,7 +17,7 @@ from twinstep.injectors import (
     make_clean_record,
     make_ordering_record,
 )
-from twinstep.schema import load_protocol
+from twinstep.schema import IncubateStep, Protocol, load_protocol
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
@@ -143,3 +146,42 @@ def test_generate_dataset_is_deterministic_with_seed() -> None:
     assert run_a != run_c
     # 3 protocols * (5 twins + 1 clean + 5 ordering) = 33
     assert len(run_a) == 33
+
+    ed_records = [rec for rec in run_a if rec["task"] == "error_detection"]
+    keys = [
+        (rec["protocol_id"], json.dumps(rec["corrupted_steps"], sort_keys=True))
+        for rec in ed_records
+    ]
+    assert len(keys) == len(set(keys))
+
+
+def test_generate_dataset_has_unique_twins_and_one_clean_per_protocol() -> None:
+    protocols = [load_protocol(p) for p in sorted(EXAMPLES_DIR.glob("*.json"))]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        records = generate_dataset(protocols, n_twins=20, seed=0, n_clean=4, n_ordering=0)
+
+    keys = [
+        (rec["protocol_id"], json.dumps(rec["corrupted_steps"], sort_keys=True))
+        for rec in records
+    ]
+    assert len(keys) == len(set(keys))
+    clean = [rec for rec in records if rec["label"] == "clean"]
+    assert sorted(rec["protocol_id"] for rec in clean) == sorted(p.protocol_id for p in protocols)
+
+
+def test_generate_dataset_retires_exhausted_error_types() -> None:
+    # One incubate step: wrong_time has 2 outputs and wrong_temperature has 5.
+    proto = Protocol(
+        protocol_id="tiny",
+        steps=(IncubateStep(plate="plate1", temperature=37, time=30, time_unit="min"),),
+    )
+    with pytest.warns(UserWarning) as caught:
+        records = generate_dataset([proto], n_twins=20, seed=0, n_clean=0)
+    messages = [str(w.message) for w in caught]
+    assert sum("no longer drawing" in m for m in messages) == 2
+    assert any("only 7 distinct twins" in m for m in messages)
+    labels = [rec["label"] for rec in records]
+    assert labels.count("wrong_time") == 2
+    assert labels.count("wrong_temperature") == 5
+    assert len(records) == 7
