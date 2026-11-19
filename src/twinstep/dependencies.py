@@ -225,14 +225,20 @@ def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
             not isinstance(steps[k], ReadStep) and plate in step_plates(steps[k])
             for k in range(i)
         )
+        washed = False
         for j in range(i + 1, n):
             step_j = steps[j]
             if isinstance(step_j, WashStep) and plate in step_plates(step_j):
-                # A plate wash can start a fresh cycle, unless the read had no prior steps at all.
+                # A wash alone does not end the cycle; keep scanning for a later mix/incubate.
                 if not prior_prep:
                     violations.append(
                         (i, j, f"step {i} reads {plate} before step {j} prepares it")
                     )
+                    break
+                washed = True
+                continue
+            if washed and isinstance(step_j, TransferStep) and plate in step_plates(step_j):
+                # A transfer after the wash starts a genuine new cycle on this plate.
                 break
             if isinstance(step_j, IncubateStep) and (step_j.plate is None or step_j.plate == plate):
                 violations.append(
@@ -247,6 +253,31 @@ def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
             if not prior_prep and plate in step_plates(step_j):
                 violations.append(
                     (i, j, f"step {i} reads {plate} before step {j} prepares it")
+                )
+                break
+
+    # 3b. Mix or transfer on plate P after a whole-plate wash of P with no read in between.
+    # If P was already read before the wash, a transfer starts a new cycle (see rule 3).
+    for i, step_i in enumerate(steps):
+        if not (isinstance(step_i, WashStep) and step_i.plate is not None and step_i.well is None):
+            continue
+        plate = step_i.plate
+        read_before = any(
+            isinstance(steps[k], ReadStep) and steps[k].plate == plate for k in range(i)
+        )
+        for j in range(i + 1, n):
+            step_j = steps[j]
+            if isinstance(step_j, ReadStep) and step_j.plate == plate:
+                break
+            if isinstance(step_j, TransferStep) and plate in step_plates(step_j):
+                if not read_before:
+                    violations.append(
+                        (i, j, f"step {i} washes {plate} before step {j} transfers on it")
+                    )
+                break
+            if isinstance(step_j, MixStep) and plate in step_plates(step_j):
+                violations.append(
+                    (i, j, f"step {i} washes {plate} before step {j} mixes it")
                 )
                 break
 
