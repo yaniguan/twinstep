@@ -354,7 +354,8 @@ def find_order_violations(
             continue
         plate = step_i.plate
         read_before = any(
-            isinstance(steps[k], ReadStep) and steps[k].plate == plate for k in range(i)
+            isinstance(s_k, ReadStep) and s_k.plate == plate
+            for s_k in steps[:i]
         )
         for j in range(i + 1, n):
             step_j = steps[j]

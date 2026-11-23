@@ -310,7 +310,7 @@ def step_from_dict(data: dict[str, Any]) -> Step:
         return IncubateStep(
             temperature=data.get("temperature"),  # type: ignore[arg-type]
             time=data.get("time"),  # type: ignore[arg-type]
-            time_unit=data.get("time_unit", data.get("unit", "min")),
+            time_unit=data.get("time_unit", data.get("unit", "min")),  # type: ignore[arg-type]
             plate=data.get("plate"),
         )
     if step_type == "wash":
@@ -533,6 +533,7 @@ def load_protocol(path: str | Path) -> Protocol:
     """Load and validate a protocol from a JSON or YAML file."""
     file_path = Path(path)
     raw = _load_raw_document(file_path)
+    raw_steps: Any
     if isinstance(raw, list):
         protocol_id = file_path.stem
         raw_steps = raw

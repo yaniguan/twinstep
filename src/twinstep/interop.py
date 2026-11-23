@@ -36,7 +36,7 @@ _READ_COMMENT_RE = re.compile(
 def _as_protocol(protocol: Protocol | Sequence[Step | dict[str, Any]]) -> Protocol:
     if isinstance(protocol, Protocol):
         return protocol
-    steps = tuple(s if isinstance(s, Step) else step_from_dict(s) for s in protocol)
+    steps = tuple(step_from_dict(s) if isinstance(s, dict) else s for s in protocol)
     return Protocol(protocol_id="twinstep_protocol", steps=steps)
 
 
@@ -355,12 +355,12 @@ def to_labfill_dict(
             )
         elif isinstance(step, WashStep):
             vol_01ul = round(_vol_to_ul(step.volume, step.unit) * 10.0)
-            w_i = get_well_idx(step.well) if step.well is not None else None
+            wash_w_i: int | None = get_well_idx(step.well) if step.well is not None else None
             ops.append(
                 {
                     "op": "wash",
                     "plate": step.plate,
-                    "well": w_i,
+                    "well": wash_w_i,
                     "well_name": step.well,
                     "volume_01ul": vol_01ul,
                     "cycles": step.cycles,

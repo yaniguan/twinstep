@@ -327,9 +327,9 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
     for idx, step in enumerate(valid_steps):
         if step is None or idx in seen_indices:
             continue
-        hit = _check_single_step_bounds(idx, step)
-        if hit is not None:
-            found.append((idx, hit["label"], hit["reason"]))
+        bound_hit = _check_single_step_bounds(idx, step)
+        if bound_hit is not None:
+            found.append((idx, bound_hit["label"], bound_hit["reason"]))
             seen_indices.add(idx)
 
     clean_pairs = [(idx, s) for idx, s in enumerate(valid_steps) if s is not None]
@@ -589,9 +589,9 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
         )
         if same_plate:
             has_later_cycle = any(
-                cycles[k] > cycles[i] and bool(pa & step_plates(steps[k]))
-                for k in range(n)
-                if steps[k] is not None
+                cycles[k] > cycles[i] and bool(pa & step_plates(sk))
+                for k, sk in enumerate(steps)
+                if sk is not None
             )
             if (
                 has_multi_cycles
