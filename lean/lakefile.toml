@@ -1,0 +1,6 @@
+name = "twinstep_lean"
+version = "0.1.0"
+defaultTargets = ["TwinStepLean"]
+
+[[lean_lib]]
+name = "TwinStepLean"
