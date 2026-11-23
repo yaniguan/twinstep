@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from typing import Any
+
 import pytest
 
 from twinstep.schema import (
@@ -12,6 +15,7 @@ from twinstep.schema import (
     ReadStep,
     TransferStep,
     WashStep,
+    _parse_simple_yaml,
     load_protocol,
     step_from_dict,
     steps_to_dicts,
@@ -27,6 +31,7 @@ def test_step_round_trip_all_types() -> None:
         IncubateStep(temperature=37, time=30, time_unit="min", plate="plate1"),
         WashStep(plate="plate1", volume=300, cycles=3, unit="uL"),
         ReadStep(plate="plate1", mode="absorbance", wavelength=450),
+        ReadStep(plate="plate1", mode="luminescence", wavelength=None),
     ]
     serialized = steps_to_dicts(steps)
     reparsed = [step_from_dict(item) for item in serialized]
@@ -39,16 +44,21 @@ def test_step_round_trip_all_types() -> None:
         {"type": "transfer", "source": "a", "dest": "b", "volume": 0, "unit": "uL"},
         {"type": "transfer", "source": "a", "dest": "b", "volume": 10, "unit": "L"},
         {"type": "transfer", "source": "", "dest": "b", "volume": 10, "unit": "uL"},
+        {"type": "transfer", "source": "plate1:A1", "dest": "plate1:A1", "volume": 50},
+        {"type": "transfer", "source": "A1", "dest": "plate1:a1", "volume": 50},
         {"type": "mix", "well": "A1", "volume": 50, "cycles": 0},
         {"type": "mix", "well": "A1", "volume": True, "cycles": 3},
         {"type": "incubate", "temperature": -300, "time": 10, "time_unit": "min"},
         {"type": "incubate", "temperature": 37, "time": 10, "time_unit": "hr"},
         {"type": "wash", "volume": 200, "cycles": 2},
+        {"type": "wash", "plate": "plate1", "well": "plate2:A1", "volume": 200, "cycles": 2},
+        {"type": "wash", "well": "reservoir:water", "volume": 200, "cycles": 2},
         {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 0},
+        {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": None},
         {"type": "unknown", "foo": 1},
     ],
 )
-def test_invalid_step_rejected(bad_step: dict) -> None:
+def test_invalid_step_rejected(bad_step: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         step_from_dict(bad_step)
 
@@ -94,3 +104,78 @@ def test_load_yaml_protocol(tmp_path: Path) -> None:
     assert isinstance(proto.steps[0], TransferStep)
     assert isinstance(proto.steps[1], IncubateStep)
     assert isinstance(proto.steps[2], ReadStep)
+
+
+def test_parse_simple_yaml_inline_comments_scientific_and_colons() -> None:
+    yaml_text = "\n".join(
+        [
+            "# Leading comment",
+            "protocol_id: 'demo#1'  # inline comment after quoted hash",
+            "steps:  # trailing comment on mapping key",
+            "  - type: transfer  # step type",
+            "    source: reservoir:buffer",
+            "    dest: plate1:A1",
+            "    volume: 1e2  # scientific notation 100.0",
+            "    unit: uL",
+            "  - type: incubate",
+            "    plate: plate1",
+            "    temperature: +25.5",
+            "    time: 5e-1  # 0.5 min",
+            "    time_unit: min",
+        ]
+    )
+    parsed = _parse_simple_yaml(yaml_text)
+    assert parsed["protocol_id"] == "demo#1"
+    assert len(parsed["steps"]) == 2
+    assert parsed["steps"][0]["volume"] == 100.0
+    assert parsed["steps"][1]["temperature"] == 25.5
+    assert parsed["steps"][1]["time"] == 0.5
+
+
+def test_load_protocol_yaml_fallback_when_pyyaml_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "yaml", None)
+
+    mapping_yaml = tmp_path / "map_proto.yaml"
+    mapping_yaml.write_text(
+        "\n".join(
+            [
+                "steps:  # protocol steps",
+                "  - type: transfer",
+                "    source: reservoir:water",
+                "    dest: plate1:A1",
+                "    volume: 1.5e2  # 150 uL",
+                "    unit: uL",
+                "  - type: read",
+                "    plate: plate1",
+                "    mode: luminescence",
+                "protocol_id: after_steps_id",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    p1 = load_protocol(mapping_yaml)
+    assert p1.protocol_id == "after_steps_id"
+    assert isinstance(p1.steps[0], TransferStep) and p1.steps[0].volume == 150.0
+    assert isinstance(p1.steps[1], ReadStep) and p1.steps[1].wavelength is None
+
+    list_yaml = tmp_path / "list_proto.yml"
+    list_yaml.write_text(
+        "\n".join(
+            [
+                "- type: transfer",
+                "  source: reservoir:water",
+                "  dest: plate1:B1",
+                "  volume: 50  # uL",
+                "- type: mix",
+                "  well: plate1:B1",
+                "  volume: 40",
+                "  cycles: 3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    p2 = load_protocol(list_yaml)
+    assert p2.protocol_id == "list_proto"
+    assert len(p2.steps) == 2
