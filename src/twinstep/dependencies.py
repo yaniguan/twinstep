@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from functools import lru_cache
 import re
-from typing import Sequence
 
-from twinstep.schema import IncubateStep, MixStep, ReadStep, Step, TransferStep, WashStep
+from twinstep.schema import (
+    IncubateStep,
+    MixStep,
+    ReadStep,
+    Step,
+    TransferStep,
+    WashStep,
+    canonical_location,
+)
 
 _EXTERNAL_PREFIXES = ("reservoir", "stock", "trough", "waste")
 _BARE_WELL_RE = re.compile(r"^[A-Ha-h](?:[1-9]|1[0-2])$")
@@ -13,47 +22,53 @@ _BARE_WELL_RE = re.compile(r"^[A-Ha-h](?:[1-9]|1[0-2])$")
 
 def is_well_ref(location: str) -> bool:
     """Return True when a location names an assay well rather than an external reservoir."""
-    prefix = location.split(":", 1)[0].lower()
+    loc = location.strip()
+    prefix = loc.split(":", 1)[0].strip().lower()
     if prefix in _EXTERNAL_PREFIXES:
         return False
-    return ":" in location or bool(_BARE_WELL_RE.match(location))
+    return ":" in loc or bool(_BARE_WELL_RE.match(loc))
+
+
+def canonical_well(location: str) -> str:
+    """Canonicalize a well or container location ('a1' -> 'plate1:A1')."""
+    return canonical_location(location)
 
 
 def plate_of(location: str) -> str | None:
     """Extract the plate identifier associated with a well or plate location."""
-    if ":" in location:
-        prefix = location.split(":", 1)[0]
+    loc = location.strip()
+    if ":" in loc:
+        prefix = loc.split(":", 1)[0].strip()
         if prefix.lower() in _EXTERNAL_PREFIXES:
             return None
         return prefix
-    if _BARE_WELL_RE.match(location):
+    if _BARE_WELL_RE.match(loc):
         return "plate1"
-    if location.lower() in _EXTERNAL_PREFIXES:
+    if loc.lower() in _EXTERNAL_PREFIXES:
         return None
-    return location
+    return loc
 
 
 def step_plates(step: Step) -> set[str]:
     """Return plate identifiers touched by a step (empty if global)."""
     if isinstance(step, TransferStep):
-        plates = {p for p in (plate_of(step.source), plate_of(step.dest)) if p is not None}
-        return plates
+        return {p for p in (plate_of(step.source), plate_of(step.dest)) if p is not None}
     if isinstance(step, MixStep):
         p = plate_of(step.well)
         return {p} if p is not None else set()
     if isinstance(step, WashStep):
         plates: set[str] = set()
         if step.plate is not None:
-            plates.add(step.plate)
+            plates.add(step.plate.strip())
         if step.well is not None:
             p = plate_of(step.well)
             if p is not None:
                 plates.add(p)
         return plates
     if isinstance(step, IncubateStep):
-        return {step.plate} if step.plate is not None else set()
+        return {step.plate.strip()} if step.plate is not None else set()
     if isinstance(step, ReadStep):
-        return {step.plate}
+        return {step.plate.strip()}
     return set()
 
 
@@ -76,25 +91,41 @@ def _is_barrier(step: Step) -> bool:
 
 
 def _has_direct_dependency(earlier: Step, later: Step) -> bool:
-    # Well-level liquid flow dependencies.
+    # Well-level RAW, WAW/flow, and WAR (anti-dependency) constraints.
     if isinstance(earlier, TransferStep):
-        if isinstance(later, TransferStep) and earlier.dest == later.source:
-            return True
-        if isinstance(later, MixStep) and earlier.dest == later.well:
-            return True
-        if isinstance(later, WashStep) and later.well is not None and earlier.dest == later.well:
-            return True
+        e_dst = canonical_well(earlier.dest)
+        e_src = canonical_well(earlier.source)
+        if isinstance(later, TransferStep):
+            l_src = canonical_well(later.source)
+            l_dst = canonical_well(later.dest)
+            if is_well_ref(earlier.dest) and e_dst == l_src:
+                return True
+            if is_well_ref(earlier.source) and is_well_ref(later.dest) and e_src == l_dst:
+                return True
+        if isinstance(later, MixStep) and is_well_ref(earlier.dest):
+            if e_dst == canonical_well(later.well):
+                return True
+        if isinstance(later, WashStep) and later.well is not None:
+            l_well = canonical_well(later.well)
+            if is_well_ref(earlier.dest) and e_dst == l_well:
+                return True
+            if is_well_ref(earlier.source) and e_src == l_well:
+                return True
 
-    if isinstance(earlier, MixStep):
-        if isinstance(later, TransferStep) and earlier.well == later.source:
-            return True
-        if isinstance(later, WashStep) and later.well is not None and earlier.well == later.well:
-            return True
+    if isinstance(earlier, MixStep) and is_well_ref(earlier.well):
+        e_well = canonical_well(earlier.well)
+        if isinstance(later, TransferStep):
+            if e_well == canonical_well(later.source):
+                return True
+        if isinstance(later, WashStep) and later.well is not None:
+            if e_well == canonical_well(later.well):
+                return True
 
     if isinstance(earlier, WashStep) and earlier.well is not None:
-        if isinstance(later, TransferStep) and earlier.well == later.dest:
+        e_well = canonical_well(earlier.well)
+        if isinstance(later, TransferStep) and e_well == canonical_well(later.dest):
             return True
-        if isinstance(later, MixStep) and earlier.well == later.well:
+        if isinstance(later, MixStep) and e_well == canonical_well(later.well):
             return True
 
     # Plate-level stage barriers (incubate, read, whole-plate wash).
@@ -104,7 +135,9 @@ def _has_direct_dependency(earlier: Step, later: Step) -> bool:
     return False
 
 
-def _transitive_reduction(n: int, edges: set[tuple[int, int]]) -> list[tuple[int, int]]:
+def _transitive_reduction(
+    n: int, edges: set[tuple[int, int]]
+) -> tuple[tuple[int, int], ...]:
     """Remove edges (i, k) already implied by a longer directed path i -> ... -> k."""
     adj: dict[int, set[int]] = {i: set() for i in range(n)}
     for u, v in edges:
@@ -121,18 +154,23 @@ def _transitive_reduction(n: int, edges: set[tuple[int, int]]) -> list[tuple[int
         implied = any(v in reachable[mid] for mid in adj[u] if mid != v)
         if not implied:
             reduced.append((u, v))
-    return reduced
+    return tuple(reduced)
+
+
+@lru_cache(maxsize=256)
+def _cached_dependencies(steps_tuple: tuple[Step, ...]) -> tuple[tuple[int, int], ...]:
+    edges: set[tuple[int, int]] = set()
+    n = len(steps_tuple)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _has_direct_dependency(steps_tuple[i], steps_tuple[j]):
+                edges.add((i, j))
+    return _transitive_reduction(n, edges)
 
 
 def find_dependencies(steps: Sequence[Step]) -> list[tuple[int, int]]:
     """Return minimal (i, j) dependency constraints with i < j for a valid step sequence."""
-    edges: set[tuple[int, int]] = set()
-    n = len(steps)
-    for i in range(n):
-        for j in range(i + 1, n):
-            if _has_direct_dependency(steps[i], steps[j]):
-                edges.add((i, j))
-    return _transitive_reduction(n, edges)
+    return list(_cached_dependencies(tuple(steps)))
 
 
 def check_constraints(order: Sequence[int], constraints: Sequence[tuple[int, int]]) -> bool:
@@ -141,27 +179,63 @@ def check_constraints(order: Sequence[int], constraints: Sequence[tuple[int, int
     return all(pos[a] < pos[b] for a, b in constraints)
 
 
-def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
-    """Detect ordering anomalies in an arbitrary step sequence without a reference protocol."""
+def find_uninitialized_well_uses(steps: Sequence[Step]) -> list[tuple[int, str, str]]:
+    """Return (step_idx, canonical_well, reason) for steps accessing wells never filled."""
+    filled: set[str] = set()
+    issues: list[tuple[int, str, str]] = []
+    for idx, step in enumerate(steps):
+        if isinstance(step, TransferStep):
+            if is_well_ref(step.source):
+                w = canonical_well(step.source)
+                if w not in filled:
+                    issues.append(
+                        (idx, w, f"step {idx} transfers from uninitialized well {step.source}")
+                    )
+            if is_well_ref(step.dest):
+                filled.add(canonical_well(step.dest))
+        elif isinstance(step, MixStep) and is_well_ref(step.well):
+            w = canonical_well(step.well)
+            if w not in filled:
+                issues.append((idx, w, f"step {idx} mixes uninitialized well {step.well}"))
+    return issues
+
+
+def find_order_violations(
+    steps: Sequence[Step],
+    *,
+    include_uninitialized: bool = False,
+) -> list[tuple[int, int, str]]:
+    """Detect ordering anomalies in an arbitrary step sequence without a reference protocol.
+
+    By default (`include_uninitialized=False`), accesses to wells that are *never* filled
+    anywhere in `steps` are omitted so `baseline.predict_error` can distinguish `swap_order`
+    from `missing_step`. Pass `include_uninitialized=True` to flag never-filled wells too.
+    """
     violations: list[tuple[int, int, str]] = []
     n = len(steps)
 
-    # Track first destination transfer index per well.
+    # Track first destination transfer index per canonical well.
     first_fill: dict[str, int] = {}
     for idx, step in enumerate(steps):
         if isinstance(step, TransferStep) and is_well_ref(step.dest):
-            first_fill.setdefault(step.dest, idx)
+            first_fill.setdefault(canonical_well(step.dest), idx)
 
-    # 1. Well used (mixed or transferred from) before it is first filled.
+    # 1. Well used (mixed or transferred from) before it is first filled (or never filled).
     for idx, step in enumerate(steps):
         if isinstance(step, MixStep) and is_well_ref(step.well):
-            fill_idx = first_fill.get(step.well)
+            w = canonical_well(step.well)
+            fill_idx = first_fill.get(w)
             if fill_idx is not None and idx < fill_idx:
                 violations.append(
                     (idx, fill_idx, f"step {idx} mixes {step.well} before step {fill_idx} fills it")
                 )
+            elif fill_idx is None and include_uninitialized:
+                violations.append(
+                    (idx, -1, f"step {idx} mixes {step.well} which is never filled")
+                )
         elif isinstance(step, TransferStep) and is_well_ref(step.source):
-            fill_idx = first_fill.get(step.source)
+            w = canonical_well(step.source)
+            fill_idx = first_fill.get(w)
             if fill_idx is not None and idx < fill_idx:
                 violations.append(
                     (
@@ -170,23 +244,28 @@ def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
                         f"step {idx} transfers from {step.source} before step {fill_idx} fills it",
                     )
                 )
+            elif fill_idx is None and include_uninitialized:
+                violations.append(
+                    (idx, -1, f"step {idx} transfers from {step.source} which is never filled")
+                )
 
     # 2. Transfer from well W before a mix of well W (with no refill between them).
     for i in range(n):
         step_i = steps[i]
         if not (isinstance(step_i, TransferStep) and is_well_ref(step_i.source)):
             continue
-        well = step_i.source
+        well = canonical_well(step_i.source)
         for j in range(i + 1, n):
             step_j = steps[j]
-            if isinstance(step_j, TransferStep) and step_j.dest == well:
+            if isinstance(step_j, TransferStep) and canonical_well(step_j.dest) == well:
                 break
-            if isinstance(step_j, MixStep) and step_j.well == well:
+            if isinstance(step_j, MixStep) and canonical_well(step_j.well) == well:
                 violations.append(
                     (
                         i,
                         j,
-                        f"step {i} transfers from {well} before step {j} mixes {well}",
+                        f"step {i} transfers from {step_i.source} "
+                        f"before step {j} mixes {step_j.well}",
                     )
                 )
                 break
@@ -195,16 +274,28 @@ def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
     for i, step_i in enumerate(steps):
         if not (isinstance(step_i, MixStep) and is_well_ref(step_i.well)):
             continue
-        well = step_i.well
+        well = canonical_well(step_i.well)
+        w_plate = plate_of(step_i.well)
         refill_idx: int | None = None
         remixed = False
         for j in range(i + 1, n):
             step_j = steps[j]
-            if isinstance(step_j, WashStep) and (step_j.well == well or step_j.plate == plate_of(well)):
+            if isinstance(step_j, WashStep) and (
+                (step_j.well is not None and canonical_well(step_j.well) == well)
+                or (step_j.plate is not None and step_j.plate == w_plate)
+            ):
                 break
-            if isinstance(step_j, TransferStep) and step_j.dest == well and refill_idx is None:
+            if (
+                isinstance(step_j, TransferStep)
+                and canonical_well(step_j.dest) == well
+                and refill_idx is None
+            ):
                 refill_idx = j
-            elif isinstance(step_j, MixStep) and step_j.well == well and refill_idx is not None:
+            elif (
+                isinstance(step_j, MixStep)
+                and canonical_well(step_j.well) == well
+                and refill_idx is not None
+            ):
                 remixed = True
                 break
         if refill_idx is not None and not remixed:
@@ -212,7 +303,7 @@ def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
                 (
                     i,
                     refill_idx,
-                    f"step {i} mixes {well} before step {refill_idx} transfers into {well}",
+                    f"step {i} mixes {step_i.well} before step {refill_idx} transfers into {well}",
                 )
             )
 
@@ -281,7 +372,7 @@ def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
                 )
                 break
 
-    # 4. Incubate before any liquid handling on its target plate(s).
+    # 4. Incubate before remaining unseparated liquid handling on its target plate(s).
     for i, step_i in enumerate(steps):
         if not isinstance(step_i, IncubateStep):
             continue
@@ -291,15 +382,17 @@ def find_order_violations(steps: Sequence[Step]) -> list[tuple[int, int, str]]:
             and (not target_plates or bool(target_plates & step_plates(steps[k])))
             for k in range(i)
         )
-        if not has_prior:
-            for j in range(i + 1, n):
-                step_j = steps[j]
-                if isinstance(step_j, (TransferStep, MixStep)) and (
-                    not target_plates or bool(target_plates & step_plates(step_j))
-                ):
-                    violations.append(
-                        (i, j, f"step {i} incubates before liquid handling step {j}")
-                    )
-                    break
+        for j in range(i + 1, n):
+            step_j = steps[j]
+            sj_plates = step_plates(step_j)
+            touches_target = not target_plates or bool(target_plates & sj_plates)
+            if has_prior and touches_target and isinstance(step_j, (ReadStep, WashStep)):
+                # A ReadStep or WashStep after prior prep closes the incubation cycle.
+                break
+            if isinstance(step_j, (TransferStep, MixStep)) and touches_target:
+                violations.append(
+                    (i, j, f"step {i} incubates before liquid handling step {j}")
+                )
+                break
 
     return violations

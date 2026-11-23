@@ -24,7 +24,13 @@ def test_baseline_catches_clear_errors() -> None:
     # wrong_unit (100 mL transfer)
     pred_unit = predict_error(
         [
-            {"type": "transfer", "source": "reservoir:buffer", "dest": "plate1:A1", "volume": 100, "unit": "mL"},
+            {
+                "type": "transfer",
+                "source": "reservoir:buffer",
+                "dest": "plate1:A1",
+                "volume": 100,
+                "unit": "mL",
+            },
             {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
         ]
     )
@@ -34,7 +40,13 @@ def test_baseline_catches_clear_errors() -> None:
     # wrong_volume (1000 uL well transfer)
     pred_vol = predict_error(
         [
-            {"type": "transfer", "source": "reservoir:buffer", "dest": "plate1:A1", "volume": 1000, "unit": "uL"},
+            {
+                "type": "transfer",
+                "source": "reservoir:buffer",
+                "dest": "plate1:A1",
+                "volume": 1000,
+                "unit": "uL",
+            },
             {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
         ]
     )
@@ -44,8 +56,20 @@ def test_baseline_catches_clear_errors() -> None:
     # wrong_temperature (120 C)
     pred_temp = predict_error(
         [
-            {"type": "transfer", "source": "reservoir:buffer", "dest": "plate1:A1", "volume": 100, "unit": "uL"},
-            {"type": "incubate", "plate": "plate1", "temperature": 120, "time": 30, "time_unit": "min"},
+            {
+                "type": "transfer",
+                "source": "reservoir:buffer",
+                "dest": "plate1:A1",
+                "volume": 100,
+                "unit": "uL",
+            },
+            {
+                "type": "incubate",
+                "plate": "plate1",
+                "temperature": 120,
+                "time": 30,
+                "time_unit": "min",
+            },
             {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
         ]
     )
@@ -55,8 +79,20 @@ def test_baseline_catches_clear_errors() -> None:
     # wrong_time (300 min)
     pred_time = predict_error(
         [
-            {"type": "transfer", "source": "reservoir:buffer", "dest": "plate1:A1", "volume": 100, "unit": "uL"},
-            {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 300, "time_unit": "min"},
+            {
+                "type": "transfer",
+                "source": "reservoir:buffer",
+                "dest": "plate1:A1",
+                "volume": 100,
+                "unit": "uL",
+            },
+            {
+                "type": "incubate",
+                "plate": "plate1",
+                "temperature": 37,
+                "time": 300,
+                "time_unit": "min",
+            },
             {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
         ]
     )

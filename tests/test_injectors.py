@@ -9,20 +9,21 @@ import warnings
 
 import pytest
 
-from twinstep.dependencies import check_constraints
+from twinstep.dependencies import _cached_dependencies, check_constraints
 from twinstep.injectors import (
     ERROR_TYPES,
+    _cached_swap_candidates,
     generate_dataset,
     inject_error,
     make_clean_record,
     make_ordering_record,
 )
-from twinstep.schema import IncubateStep, Protocol, load_protocol
+from twinstep.schema import IncubateStep, Protocol, TransferStep, load_protocol
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
 
-def _full_protocol():
+def _full_protocol() -> Protocol:
     return load_protocol(EXAMPLES_DIR / "mix_incubate_read.json")
 
 
@@ -171,7 +172,7 @@ def test_generate_dataset_has_unique_twins_and_one_clean_per_protocol() -> None:
 
 
 def test_generate_dataset_retires_exhausted_error_types() -> None:
-    # One incubate step: wrong_time has 2 outputs and wrong_temperature has 5.
+    # One incubate step: wrong_time has 3 outputs (unit, 10x, 0.1x) and wrong_temperature has 5.
     proto = Protocol(
         protocol_id="tiny",
         steps=(IncubateStep(plate="plate1", temperature=37, time=30, time_unit="min"),),
@@ -180,8 +181,56 @@ def test_generate_dataset_retires_exhausted_error_types() -> None:
         records = generate_dataset([proto], n_twins=20, seed=0, n_clean=0)
     messages = [str(w.message) for w in caught]
     assert sum("no longer drawing" in m for m in messages) == 2
-    assert any("only 7 distinct twins" in m for m in messages)
+    assert any("only 8 distinct twins" in m for m in messages)
     labels = [rec["label"] for rec in records]
-    assert labels.count("wrong_time") == 2
+    assert labels.count("wrong_time") == 3
     assert labels.count("wrong_temperature") == 5
-    assert len(records) == 7
+    assert len(records) == 8
+
+
+# Issue #12: _clean_float boundary guards for near-0 durations & cryogenic temperatures
+def test_boundary_float_rounding_in_time_temperature_and_volume() -> None:
+    cryo_proto = Protocol(
+        protocol_id="cryo_boundary",
+        steps=(
+            TransferStep(source="reservoir:buf", dest="plate1:A1", volume=1e-8, unit="uL"),
+            IncubateStep(plate="plate1", temperature=-233.1500001, time=1e-8, time_unit="s"),
+        ),
+    )
+    rng = random.Random(0)
+    for _ in range(30):
+        t_temp = inject_error(cryo_proto, "wrong_temperature", rng)
+        assert t_temp.corrupted_steps[1]["temperature"] > -273.15
+        t_time = inject_error(cryo_proto, "wrong_time", rng)
+        assert t_time.corrupted_steps[1]["time"] > 0
+        t_vol = inject_error(cryo_proto, "wrong_volume", rng)
+        assert t_vol.corrupted_steps[0]["volume"] > 0
+
+
+# Issue #13: Palindromic [A, B, A] and identical [A, A] ordering protocols
+def test_ordering_record_handles_palindromes_and_rejects_identical_steps() -> None:
+    step_a = TransferStep(source="reservoir:buf", dest="plate1:A1", volume=50, unit="uL")
+    step_b = TransferStep(source="reservoir:buf", dest="plate1:A2", volume=50, unit="uL")
+
+    palindrome = Protocol(protocol_id="pal", steps=(step_a, step_b, step_a))
+    for seed in range(10):
+        rec = make_ordering_record(palindrome, random.Random(seed))
+        assert rec.shuffled_steps != rec.correct_steps
+
+    identical = Protocol(protocol_id="ident", steps=(step_a, step_a))
+    with pytest.raises(ValueError, match="identical repeated steps"):
+        make_ordering_record(identical, random.Random(0))
+
+    with pytest.warns(UserWarning, match="skipping ordering records"):
+        ds = generate_dataset([identical], n_twins=1, n_clean=0, n_ordering=3, seed=0)
+    assert all(r["task"] != "ordering" for r in ds)
+
+
+# Issue #22: LRU caching avoids redundant O(n^3) DAG recomputation
+def test_dependency_and_swap_caching_hits_during_generate_dataset() -> None:
+    _cached_dependencies.cache_clear()
+    _cached_swap_candidates.cache_clear()
+    proto = load_protocol(EXAMPLES_DIR / "dilution_series.json")
+    generate_dataset([proto], n_twins=10, n_ordering=5, seed=0)
+    assert _cached_dependencies.cache_info().hits >= 1
+    assert _cached_swap_candidates.cache_info().hits >= 1
