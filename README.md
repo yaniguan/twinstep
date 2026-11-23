@@ -19,6 +19,40 @@ pip install -e .[dev]
 
 Requires Python 3.11+. The runtime package uses the Python standard library only.
 
+Part of **[Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab)** ([Project Studio](https://yaniguan.github.io/auto-lab/)) — **Layer `L3 · Post-Training RLVR, Error Twins & GPU Throughput`**.
+
+## System Profile: Object · Data · Model · Training · History · Unique Properties
+
+Full code-level architecture, dependency/injector rules, benchmark tables (`main` vs open PR `origin/review-fixes`), and history are documented in **[`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md)**:
+
+- **Object**: Deterministic, zero-runtime-dependency generator, reference-free baseline, and evaluator for liquid-handling protocol **error detection** and **step ordering**.
+- **Data**: Strictly validated 5-step JSON/YAML schema (`transfer`, `mix`, `incubate`, `wash`, `read`) with 3 MIT-licensed example protocols (`dilution_series.json`, `wash_and_read.json`, `mix_incubate_read.json`).
+- **Model**: Transitive-reduced well liquid-flow + plate-barrier dependency DAG (`twinstep.dependencies`), 6 seeded single-fault injectors (`swap_order`, `wrong_volume`, `wrong_unit`, `missing_step`, `wrong_temperature`, `wrong_time`), and a reference-blind rule + `heapq` topological baseline (`twinstep.baseline`).
+- **Training**: Generates clean SFT/DPO preference pairs and verifiable RLVR ordering/localization rewards for [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain) (no internal neural weights; CPU baseline achieves `72.2%` error detection on `main` / `77.8%` on `origin/review-fixes` and `100.0%` ordering constraint satisfaction on `--n 5 --seed 0`).
+- **History**: Initial release `8a17ea1` on `main` (`0.1.0`, 29 tests) and open PR `origin/review-fixes` (`d598c32`, twin deduplication, wash-cycle violation rules, and hand-verified evaluation tests).
+- **Unique Properties**: Pure Python 3.11+ stdlib portability (with built-in YAML fallback), partial-order constraint evaluation that respects independent step commutativity, and direct interoperability with [`labfill`](https://github.com/yaniguan/labfill), [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain), [`stepbot`](https://github.com/yaniguan/stepbot), [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal), [`lab-verify`](https://github.com/yaniguan/lab-verify), and [`YLM`](https://github.com/yaniguan/YLM) LabLean.
+
+## Repository Layout
+
+```text
+twinstep/
+├── examples/                    # Bundled valid liquid-handling protocols (JSON)
+│   ├── dilution_series.json
+│   ├── mix_incubate_read.json
+│   └── wash_and_read.json
+├── src/twinstep/
+│   ├── __init__.py              # Public API exports
+│   ├── schema.py                # Frozen step dataclasses & JSON/YAML loaders
+│   ├── dependencies.py          # Liquid-flow + barrier DAG, transitive reduction, violations
+│   ├── injectors.py             # 6 seeded error injectors & JSONL dataset generator
+│   ├── baseline.py              # Reference-blind rule checker & topological order baseline
+│   ├── evaluate.py              # Error-detection, step_index, and ordering evaluators
+│   └── cli.py                   # `twinstep generate | baseline | eval` CLI
+├── docs/
+│   └── ARCHITECTURE_AND_HISTORY.md
+└── tests/                       # Schema, dependency, injector, baseline/eval, and CLI tests
+```
+
 ## Quickstart
 
 Generate twins and ordering examples from the three included protocols in `examples/`:
