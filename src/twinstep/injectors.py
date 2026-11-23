@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import random
 from typing import Any, Sequence
+import warnings
 
 from twinstep.dependencies import check_constraints, find_dependencies
 from twinstep.schema import (
@@ -25,6 +27,9 @@ ERROR_TYPES: tuple[str, ...] = (
     "wrong_temperature",
     "wrong_time",
 )
+
+# Draws per twin before an error type is treated as out of distinct outputs.
+MAX_DRAW_ATTEMPTS = 50
 
 
 @dataclass(frozen=True)
@@ -334,6 +339,10 @@ def make_ordering_record(
     )
 
 
+def _steps_key(steps: Sequence[dict[str, Any]]) -> str:
+    return json.dumps(list(steps), sort_keys=True)
+
+
 def generate_dataset(
     protocols: Sequence[Protocol],
     n_twins: int = 5,
@@ -341,7 +350,13 @@ def generate_dataset(
     n_clean: int = 1,
     n_ordering: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Generate deterministic error-detection twins, clean negatives, and ordering records."""
+    """Generate deterministic error-detection twins, clean negatives, and ordering records.
+
+    Twins within a protocol have distinct ``corrupted_steps``. An error type that yields
+    no new output after ``MAX_DRAW_ATTEMPTS`` draws is dropped with a warning, so fewer than
+    ``n_twins`` records may be returned for small protocols. Any ``n_clean > 0`` emits a
+    single clean record per protocol, since extra clean copies would be identical.
+    """
     if n_twins < 0 or n_clean < 0:
         raise ValueError("n_twins and n_clean must be non-negative")
     ordering_count = n_twins if n_ordering is None else n_ordering
@@ -357,26 +372,48 @@ def generate_dataset(
             raise ValueError(f"no error injectors apply to protocol {protocol.protocol_id!r}")
 
         # Cycle through shuffled applicable error types so all supported classes are represented.
-        chosen_types: list[str] = []
-        while len(chosen_types) < n_twins:
-            batch = list(applicable)
+        # Each twin must have distinct corrupted_steps; a type that keeps colliding is retired.
+        seen: set[str] = set()
+        active = list(applicable)
+        twins: list[TwinRecord] = []
+        while len(twins) < n_twins and active:
+            batch = list(active)
             rng.shuffle(batch)
-            chosen_types.extend(batch)
-        chosen_types = chosen_types[:n_twins]
-
-        for idx, err_type in enumerate(chosen_types):
-            twin = inject_error(
-                protocol,
-                err_type,
-                rng,
-                record_id=f"{protocol.protocol_id}:twin:{idx}",
+            for err_type in batch:
+                if len(twins) >= n_twins:
+                    break
+                for _ in range(MAX_DRAW_ATTEMPTS):
+                    twin = inject_error(
+                        protocol,
+                        err_type,
+                        rng,
+                        record_id=f"{protocol.protocol_id}:twin:{len(twins)}",
+                    )
+                    key = _steps_key(twin.corrupted_steps)
+                    if key not in seen:
+                        seen.add(key)
+                        twins.append(twin)
+                        break
+                else:
+                    active.remove(err_type)
+                    warnings.warn(
+                        f"protocol {protocol.protocol_id!r}: no new distinct {err_type!r} twin "
+                        f"after {MAX_DRAW_ATTEMPTS} draws; no longer drawing this type",
+                        stacklevel=2,
+                    )
+        if len(twins) < n_twins:
+            warnings.warn(
+                f"protocol {protocol.protocol_id!r}: only {len(twins)} distinct twins "
+                f"available (requested {n_twins})",
+                stacklevel=2,
             )
-            records.append(twin.to_dict())
+        records.extend(twin.to_dict() for twin in twins)
 
-        for idx in range(n_clean):
+        # Clean negatives are identical copies of the protocol, so emit at most one.
+        if n_clean > 0:
             clean = make_clean_record(
                 protocol,
-                record_id=f"{protocol.protocol_id}:clean:{idx}",
+                record_id=f"{protocol.protocol_id}:clean:0",
             )
             records.append(clean.to_dict())
 
