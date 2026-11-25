@@ -7,7 +7,8 @@ Self-contained **Lean 4** (`leanprover/lean4:v4.36.0`) verification kernel for `
 | Component | Definitions | Machine-Checked Theorems |
 | :--- | :--- | :--- |
 | **Shared Diagnostics** | `RegimeViolation`, `firstViolation` | `firstViolation_nil`, `firstViolation_cons`, `firstViolation_none_iff` |
-| **Causal Step DAG** | `indexOfStep`, `dagEdgeSatisfied`, `checkTwinStepOrder` | `violated_dag_edge_rejected`, `checkTwinStepOrder_all_edges_satisfied`, `dagEdgeSatisfied_irrefl`, `dagEdgeSatisfied_asymm` |
+| **Causal Step DAG** | `indexOfStep`, `dagEdgeSatisfied`, `checkTwinStepOrder` | `violated_dag_edge_rejected`, `checkTwinStepOrder_all_edges_satisfied`, `checkTwinStepOrder_bijective`, `checkTwinStepOrder_nodup_and_mem_iff`, `dagEdgeSatisfied_irrefl`, `dagEdgeSatisfied_asymm`, `dagEdgeSatisfied_trans` |
+| **Transitive Reduction & Uniqueness** | `dagReachable`, `isImpliedChord`, `transitiveReduction`, `swapAdjacentOrder` | `checkTwinStepOrder_transitiveReduction_iff`, `transitiveReduction_nodup`, `transitiveReduction_irredundant`, `topological_order_unique_iff_contiguous_chain` |
 | **Stateful Saboteur Gate** | `StatefulSaboteurCheck`, `reverseConcBlocked`, `checkStatefulSaboteurGate` | `sabotaged_candidate_rejected` |
 
 ## Build & Verify
@@ -17,4 +18,4 @@ cd lean
 lake build
 ```
 
-Zero external dependencies, `0 sorry`, `0 axiom`, and 9 compile-time `#guard` checks.
+Zero external dependencies, `0 sorry`, `0 axiom`, and 12 compile-time `#guard` checks.

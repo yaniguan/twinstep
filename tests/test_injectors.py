@@ -234,3 +234,35 @@ def test_dependency_and_swap_caching_hits_during_generate_dataset() -> None:
     generate_dataset([proto], n_twins=10, n_ordering=5, seed=0)
     assert _cached_dependencies.cache_info().hits >= 1
     assert _cached_swap_candidates.cache_info().hits >= 1
+
+
+# Issue #28: Compound inject_k_errors preserves transitive swaps & distinct post-deletion indices
+def test_issue_28_inject_k_errors_no_bridge_cancellation_or_index_collision() -> None:
+    from twinstep.dependencies import find_order_violations
+    from twinstep.injectors import inject_k_errors
+    from twinstep.schema import MixStep, ReadStep, steps_from_list
+
+    proto = Protocol(
+        "bridge_cancel",
+        (
+            TransferStep("reservoir:dye", "plate1:B1", 100, "uL"),
+            TransferStep("reservoir:buf", "plate1:A1", 100, "uL"),
+            TransferStep("plate1:A1", "plate1:B1", 50, "uL"),
+            MixStep("plate1:B1", 80, 5, "uL"),
+            ReadStep("plate1", "absorbance", 450),
+        ),
+    )
+
+    for seed in range(60):
+        mt = inject_k_errors(proto, k=2, rng=random.Random(seed))
+        assert len(mt.labels) == 2
+        assert len(mt.step_indices) == 2
+        # Distinct step coordinates across all compound mutations
+        assert len(set(mt.step_indices)) == 2
+        # Every human-readable description matches its post-deletion step_index
+        for idx_val, desc in zip(mt.step_indices, mt.descriptions):
+            assert f"step {idx_val} " in desc
+
+        if "swap_order" in mt.labels:
+            csteps = steps_from_list(mt.corrupted_steps)
+            assert find_order_violations(csteps, include_uninitialized=True) != []

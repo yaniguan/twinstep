@@ -10,14 +10,22 @@ import random
 from typing import Any
 import warnings
 
-from twinstep.dependencies import check_constraints, find_dependencies
+from twinstep.baseline import _assign_plate_cycles, predict_error, predict_record
+from twinstep.dependencies import (
+    check_constraints,
+    find_dependencies,
+    infer_default_plate,
+    is_well_ref,
+)
 from twinstep.schema import (
     IncubateStep,
     MixStep,
     Protocol,
+    ReadStep,
     Step,
     TransferStep,
     WashStep,
+    step_from_dict,
     steps_to_dicts,
 )
 
@@ -28,6 +36,14 @@ ERROR_TYPES: tuple[str, ...] = (
     "missing_step",
     "wrong_temperature",
     "wrong_time",
+)
+
+DIFFICULTY_FILTERS: tuple[str, ...] = (
+    "all",
+    "easy",
+    "medium",
+    "hard",
+    "hard_saboteur",
 )
 
 # Draws per twin before an error type is treated as out of distinct outputs.
@@ -349,6 +365,33 @@ def inject_error(
     )
 
 
+def _swap_survives_deletion(
+    steps: Sequence[Step],
+    swap_pairs: Sequence[tuple[int, int]],
+    deleted_idx: int | None,
+) -> bool:
+    surviving_orig = [idx for idx in range(len(steps)) if idx != deleted_idx]
+    surviving_steps = [steps[idx] for idx in surviving_orig]
+    surviving_deps = find_dependencies(surviving_steps)
+    if not surviving_deps:
+        return False
+    surviving_swap_set = set(_swap_candidates(surviving_steps))
+    perm = list(range(len(surviving_steps)))
+    for i, j in swap_pairs:
+        if i == deleted_idx or j == deleted_idx:
+            return False
+        fi = i - 1 if (deleted_idx is not None and i > deleted_idx) else i
+        fj = j - 1 if (deleted_idx is not None and j > deleted_idx) else j
+        if (fi, fj) not in surviving_swap_set:
+            return False
+        single_perm = list(range(len(surviving_steps)))
+        single_perm[fi], single_perm[fj] = single_perm[fj], single_perm[fi]
+        if check_constraints(single_perm, surviving_deps):
+            return False
+        perm[fi], perm[fj] = perm[fj], perm[fi]
+    return not check_constraints(perm, surviving_deps)
+
+
 def inject_k_errors(
     protocol: Protocol,
     k: int,
@@ -368,19 +411,43 @@ def inject_k_errors(
     correct_dicts = steps_to_dicts(steps)
     swap_all = _swap_candidates(steps)
 
-    for _ in range(MAX_DRAW_ATTEMPTS):
+    for _ in range(MAX_DRAW_ATTEMPTS * 2):
         mutated = list(steps)
         used: set[int] = set()
-        records_meta: list[tuple[int, str, str]] = []
+        primary_orig: set[int] = set()
+        swap_pairs: list[tuple[int, int]] = []
+        raw_edits: list[dict[str, Any]] = []
         deleted_idx: int | None = None
         ok = True
 
         for fault_num in range(k):
+            forbidden_primary = {deleted_idx + 1} if deleted_idx is not None else set()
             choices: list[str] = []
-            avail_vol = [i for i in _volume_step_indices(steps) if i not in used]
-            avail_inc = [i for i in _incubate_indices(steps) if i not in used]
-            avail_swaps = [(a, b) for a, b in swap_all if a not in used and b not in used]
-            avail_del = [i for i in range(n) if i not in used]
+            avail_vol = [
+                i
+                for i in _volume_step_indices(steps)
+                if i not in used and i not in forbidden_primary
+            ]
+            avail_inc = [
+                i
+                for i in _incubate_indices(steps)
+                if i not in used and i not in forbidden_primary
+            ]
+            avail_swaps = [
+                (a, b)
+                for a, b in swap_all
+                if a not in used
+                and b not in used
+                and a not in forbidden_primary
+                and _swap_survives_deletion(steps, [*swap_pairs, (a, b)], deleted_idx)
+            ]
+            avail_del = [
+                i
+                for i in range(n)
+                if i not in used
+                and (i + 1) not in primary_orig
+                and (not swap_pairs or _swap_survives_deletion(steps, swap_pairs, i))
+            ]
 
             if avail_vol:
                 choices.extend(("wrong_volume", "wrong_unit"))
@@ -400,8 +467,9 @@ def inject_k_errors(
                 i, j = rng.choice(avail_swaps)
                 mutated[i], mutated[j] = mutated[j], mutated[i]
                 used.update((i, j))
-                desc = f"Swapped step {i} ({steps[i].type}) and step {j} ({steps[j].type})."
-                records_meta.append((i, err_type, desc))
+                primary_orig.add(i)
+                swap_pairs.append((i, j))
+                raw_edits.append({"type": err_type, "i": i, "j": j})
             elif err_type == "wrong_volume":
                 idx = rng.choice(avail_vol)
                 t_vol = steps[idx]
@@ -409,8 +477,8 @@ def inject_k_errors(
                 nv = _mutate_volume(t_vol, rng)
                 mutated[idx] = replace(t_vol, volume=nv)
                 used.add(idx)
-                desc = f"Scaled step {idx} ({t_vol.type}) volume to {nv:g} {t_vol.unit}."
-                records_meta.append((idx, err_type, desc))
+                primary_orig.add(idx)
+                raw_edits.append({"type": err_type, "idx": idx, "nv": nv})
             elif err_type == "wrong_unit":
                 idx = rng.choice(avail_vol)
                 t_unit = steps[idx]
@@ -418,8 +486,8 @@ def inject_k_errors(
                 nu: Any = "mL" if t_unit.unit == "uL" else "uL"
                 mutated[idx] = replace(t_unit, unit=nu)
                 used.add(idx)
-                desc = f"Changed step {idx} ({t_unit.type}) unit to {nu}."
-                records_meta.append((idx, err_type, desc))
+                primary_orig.add(idx)
+                raw_edits.append({"type": err_type, "idx": idx, "nu": nu})
             elif err_type == "wrong_temperature":
                 idx = rng.choice(avail_inc)
                 t_inc = steps[idx]
@@ -427,8 +495,8 @@ def inject_k_errors(
                 nt = _mutate_temperature(t_inc, rng)
                 mutated[idx] = replace(t_inc, temperature=nt)
                 used.add(idx)
-                desc = f"Changed step {idx} (incubate) temperature to {nt:g} C."
-                records_meta.append((idx, err_type, desc))
+                primary_orig.add(idx)
+                raw_edits.append({"type": err_type, "idx": idx, "nt": nt})
             elif err_type == "wrong_time":
                 idx = rng.choice(avail_inc)
                 t_inc = steps[idx]
@@ -436,27 +504,121 @@ def inject_k_errors(
                 ntm, ntu = _mutate_time(t_inc, rng)
                 mutated[idx] = replace(t_inc, time=ntm, time_unit=ntu)  # type: ignore[arg-type]
                 used.add(idx)
-                desc = f"Changed step {idx} (incubate) duration to {ntm:g} {ntu}."
-                records_meta.append((idx, err_type, desc))
+                primary_orig.add(idx)
+                raw_edits.append({"type": err_type, "idx": idx, "ntm": ntm, "ntu": ntu})
             elif err_type == "missing_step":
                 idx = rng.choice(avail_del)
                 deleted_idx = idx
                 used.add(idx)
-                desc = f"Dropped step {idx} ({steps[idx].type}) from protocol."
-                records_meta.append((idx, err_type, desc))
+                raw_edits.append({"type": err_type, "idx": idx})
 
-        if not ok or len(records_meta) != k:
+        if not ok or len(raw_edits) != k:
             continue
 
+        if swap_pairs and not _swap_survives_deletion(steps, swap_pairs, deleted_idx):
+            continue
+
+        surviving_ref_steps = [
+            steps[idx] for idx in range(n) if idx != deleted_idx
+        ]
         if deleted_idx is not None:
             mutated.pop(deleted_idx)
-            adjusted: list[tuple[int, str, str]] = []
-            for pos, lbl, dsc in records_meta:
-                if lbl != "missing_step" and pos > deleted_idx:
-                    adjusted.append((pos - 1, lbl, dsc))
-                else:
-                    adjusted.append((pos, lbl, dsc))
-            records_meta = adjusted
+
+        def _post_idx(orig: int) -> int:
+            return orig - 1 if (deleted_idx is not None and orig > deleted_idx) else orig
+
+        records_meta: list[tuple[int, str, str]] = []
+        valid_invariants = True
+        for edit in raw_edits:
+            etype = str(edit["type"])
+            if etype == "swap_order":
+                oi = int(edit["i"])
+                oj = int(edit["j"])
+                fi = _post_idx(oi)
+                fj = _post_idx(oj)
+                if mutated[fi] == mutated[fj]:
+                    valid_invariants = False
+                    break
+                desc = (
+                    f"Swapped step {fi} ({steps[oi].type}) and "
+                    f"step {fj} ({steps[oj].type}), violating dependency order."
+                )
+                records_meta.append((fi, etype, desc))
+            elif etype == "wrong_volume":
+                oidx = int(edit["idx"])
+                fpos = _post_idx(oidx)
+                ref_step = surviving_ref_steps[fpos]
+                mut_step = mutated[fpos]
+                assert isinstance(ref_step, (TransferStep, MixStep, WashStep))
+                assert isinstance(mut_step, (TransferStep, MixStep, WashStep))
+                if mut_step.volume == ref_step.volume:
+                    valid_invariants = False
+                    break
+                nv_val = float(edit["nv"])
+                desc = (
+                    f"Scaled step {fpos} ({ref_step.type}) volume "
+                    f"to {nv_val:g} {ref_step.unit}."
+                )
+                records_meta.append((fpos, etype, desc))
+            elif etype == "wrong_unit":
+                oidx = int(edit["idx"])
+                fpos = _post_idx(oidx)
+                ref_step = surviving_ref_steps[fpos]
+                mut_step = mutated[fpos]
+                assert isinstance(ref_step, (TransferStep, MixStep, WashStep))
+                assert isinstance(mut_step, (TransferStep, MixStep, WashStep))
+                if mut_step.unit == ref_step.unit:
+                    valid_invariants = False
+                    break
+                nu_val = str(edit["nu"])
+                desc = f"Changed step {fpos} ({ref_step.type}) unit to {nu_val}."
+                records_meta.append((fpos, etype, desc))
+            elif etype == "wrong_temperature":
+                oidx = int(edit["idx"])
+                fpos = _post_idx(oidx)
+                ref_step = surviving_ref_steps[fpos]
+                mut_step = mutated[fpos]
+                assert isinstance(ref_step, IncubateStep)
+                assert isinstance(mut_step, IncubateStep)
+                if mut_step.temperature == ref_step.temperature:
+                    valid_invariants = False
+                    break
+                nt_val = float(edit["nt"])
+                desc = f"Changed step {fpos} (incubate) temperature to {nt_val:g} C."
+                records_meta.append((fpos, etype, desc))
+            elif etype == "wrong_time":
+                oidx = int(edit["idx"])
+                fpos = _post_idx(oidx)
+                ref_step = surviving_ref_steps[fpos]
+                mut_step = mutated[fpos]
+                assert isinstance(ref_step, IncubateStep)
+                assert isinstance(mut_step, IncubateStep)
+                if (mut_step.time, mut_step.time_unit) == (
+                    ref_step.time,
+                    ref_step.time_unit,
+                ):
+                    valid_invariants = False
+                    break
+                ntm_val = float(edit["ntm"])
+                ntu_val = str(edit["ntu"])
+                desc = (
+                    f"Changed step {fpos} (incubate) duration "
+                    f"to {ntm_val:g} {ntu_val}."
+                )
+                records_meta.append((fpos, etype, desc))
+            elif etype == "missing_step":
+                d_idx = int(edit["idx"])
+                if len(mutated) != n - 1:
+                    valid_invariants = False
+                    break
+                desc = f"Dropped step {d_idx} ({steps[d_idx].type}) from protocol."
+                records_meta.append((d_idx, etype, desc))
+
+        if not valid_invariants:
+            continue
+
+        if len({item[0] for item in records_meta}) != k:
+            continue
 
         corrupted_dicts = steps_to_dicts(mutated)
         if corrupted_dicts == correct_dicts:
@@ -615,6 +777,336 @@ def _steps_key(steps: Sequence[dict[str, Any]]) -> str:
     return json.dumps(list(steps), sort_keys=True)
 
 
+def classify_difficulty(record: dict[str, Any]) -> str:
+    """Classify a generated twin or ordering record into calibrated difficulty tiers."""
+    if record.get("is_saboteur") or record.get("difficulty") == "hard_saboteur":
+        return "hard_saboteur"
+
+    task = str(record.get("task", "error_detection"))
+    if task == "multi_error_detection":
+        labels = record.get("labels", [])
+        return "hard" if len(labels) >= 2 else "easy"
+
+    if task == "ordering":
+        raw_shuffled = record.get("shuffled_steps", [])
+        parsed_steps: list[Step | None] = []
+        for item in raw_shuffled:
+            if isinstance(item, dict):
+                try:
+                    parsed_steps.append(step_from_dict(item))
+                except ValueError:
+                    parsed_steps.append(None)
+        default_plate = infer_default_plate(parsed_steps)
+        p_cycles = _assign_plate_cycles(parsed_steps, default_plate)
+        if any(any(c > 0 for c in cyc_list) for cyc_list in p_cycles.values()):
+            return "hard"
+        pred_ord = predict_record(record)
+        if pred_ord.get("pred_order") == record.get("gold_order"):
+            return "easy"
+        return "medium"
+
+    gold_label = str(record.get("label", "clean"))
+    if gold_label == "clean":
+        return "easy"
+    pred = predict_record(record)
+    if pred.get("label") == gold_label and pred.get("step_index") == record.get("step_index"):
+        return "easy"
+    return "medium"
+
+
+def filter_records_by_difficulty(
+    records: Sequence[dict[str, Any]],
+    difficulty: str = "all",
+) -> list[dict[str, Any]]:
+    """Filter annotated dataset records by difficulty tier."""
+    if difficulty not in DIFFICULTY_FILTERS:
+        raise ValueError(
+            f"unsupported difficulty {difficulty!r}; expected one of {DIFFICULTY_FILTERS}"
+        )
+    if difficulty == "all":
+        return list(records)
+    out: list[dict[str, Any]] = []
+    for rec in records:
+        tier = str(rec.get("difficulty") or classify_difficulty(rec))
+        if difficulty == "hard" and tier in ("hard", "hard_saboteur"):
+            out.append(rec)
+        elif tier == difficulty:
+            out.append(rec)
+    return out
+
+
+def _lower_saboteur_steps(raw_steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    lowered: list[dict[str, Any]] = []
+    for st in raw_steps:
+        op = str(st.get("op", ""))
+        if op == "transfer":
+            src_raw = str(st.get("src", "BUFFER"))
+            src = (
+                "reservoir:buffer"
+                if src_raw.upper() == "BUFFER"
+                else f"plate1:{src_raw.upper()}"
+            )
+            dst = f"plate1:{str(st.get('dst', 'A1')).upper()}"
+            vol = max(1.0, float(st.get("vol_uL", 50.0)))
+            lowered.append(
+                TransferStep(source=src, dest=dst, volume=vol, unit="uL").to_dict()
+            )
+        elif op == "mix":
+            dst = f"plate1:{str(st.get('dst', 'A1')).upper()}"
+            vol = max(1.0, float(st.get("vol_uL", 50.0)))
+            cycles = max(1, int(st.get("cycles", 3)))
+            lowered.append(
+                MixStep(well=dst, volume=vol, cycles=cycles, unit="uL").to_dict()
+            )
+        elif op == "incubate":
+            temp = float(st.get("temp_c", 37.0))
+            dur = max(5.0, float(st.get("duration_s", 60.0)))
+            lowered.append(
+                IncubateStep(
+                    plate="plate1",
+                    temperature=temp,
+                    time=dur,
+                    time_unit="s",
+                ).to_dict()
+            )
+        elif op == "read":
+            lowered.append(
+                ReadStep(plate="plate1", mode="absorbance", wavelength=450).to_dict()
+            )
+    return lowered
+
+
+def saboteur_pairs_to_records(
+    pairs: Sequence[dict[str, Any]],
+    *,
+    id_prefix: str = "saboteur",
+) -> list[dict[str, Any]]:
+    """Adapt curated ``saboteur_evolver`` hard-negative pairs into ``twinstep`` records."""
+    adapted: list[dict[str, Any]] = []
+    for idx, pair in enumerate(pairs):
+        clean_raw = pair.get("clean_steps")
+        sab_raw = pair.get("sabotaged_steps")
+        if not isinstance(clean_raw, (list, tuple)) or not isinstance(sab_raw, (list, tuple)):
+            continue
+        clean_dicts = _lower_saboteur_steps(clean_raw)
+        sab_dicts = _lower_saboteur_steps(sab_raw)
+        if not clean_dicts or not sab_dicts:
+            continue
+
+        violated_rules = [str(r) for r in pair.get("violated_lean_rules", [])]
+        evaded_gates = [str(g) for g in pair.get("evaded_gates", [])]
+        mut_ops = [str(m) for m in pair.get("mutation_ops", [])]
+        proto_name = str(pair.get("protocol_name", "saboteur_protocol"))
+
+        label = "wrong_volume"
+        step_index = 0
+        orig_val: Any = None
+        new_val: Any = None
+
+        if sab_dicts == clean_dicts:
+            # Stateful seal-inversion mutation: reflect subtle unsealed thermal excursion in-range.
+            inc_positions = [
+                pos for pos, item in enumerate(sab_dicts) if item.get("type") == "incubate"
+            ]
+            target_pos = inc_positions[0] if inc_positions else 0
+            mut_item = dict(sab_dicts[target_pos])
+            if mut_item.get("type") == "incubate":
+                orig_temp = float(mut_item["temperature"])
+                new_temp = round(orig_temp - 6.5 if orig_temp >= 85.0 else 86.0, 2)
+                mut_item["temperature"] = new_temp
+                sab_dicts[target_pos] = mut_item
+                label = "wrong_temperature"
+                step_index = target_pos
+                orig_val = orig_temp
+                new_val = new_temp
+            else:
+                orig_vol = float(mut_item.get("volume", 50.0))
+                mut_item["volume"] = round(min(280.0, orig_vol + 45.0), 2)
+                sab_dicts[target_pos] = mut_item
+                label = "wrong_volume"
+                step_index = target_pos
+                orig_val = orig_vol
+                new_val = mut_item["volume"]
+        else:
+            diff_indices = [
+                pos
+                for pos in range(min(len(clean_dicts), len(sab_dicts)))
+                if clean_dicts[pos] != sab_dicts[pos]
+            ]
+            if len(sab_dicts) < len(clean_dicts):
+                label = "missing_step"
+                step_index = diff_indices[0] if diff_indices else len(sab_dicts)
+                orig_val = clean_dicts[step_index]
+                new_val = None
+            else:
+                step_index = diff_indices[0] if diff_indices else 0
+                c_item = clean_dicts[step_index]
+                s_item = sab_dicts[step_index]
+                if (
+                    c_item.get("type") != s_item.get("type")
+                    or c_item.get("dest") != s_item.get("dest")
+                    or c_item.get("well") != s_item.get("well")
+                ):
+                    label = "swap_order"
+                    second_idx = diff_indices[-1] if len(diff_indices) >= 2 else step_index + 1
+                    second_idx = min(len(clean_dicts) - 1, second_idx)
+                    orig_val = {
+                        "indices": [step_index, second_idx],
+                        "steps": [clean_dicts[step_index], clean_dicts[second_idx]],
+                    }
+                    new_val = {
+                        "indices": [second_idx, step_index],
+                        "steps": [sab_dicts[step_index], sab_dicts[second_idx]],
+                    }
+                elif c_item.get("volume") != s_item.get("volume"):
+                    label = "wrong_volume"
+                    orig_val = c_item.get("volume")
+                    new_val = s_item.get("volume")
+                else:
+                    label = "wrong_temperature"
+                    orig_val = c_item.get("temperature")
+                    new_val = s_item.get("temperature")
+
+        rec = TwinRecord(
+            id=f"{proto_name}:{id_prefix}:{idx}",
+            protocol_id=proto_name,
+            correct_steps=clean_dicts,
+            corrupted_steps=sab_dicts,
+            label=label,
+            step_index=step_index,
+            original_value=orig_val,
+            new_value=new_val,
+            description=(
+                f"Evolutionary saboteur ({', '.join(mut_ops) or 'stealth'}): "
+                f"evades {', '.join(evaded_gates)} while violating {', '.join(violated_rules)}."
+            ),
+        ).to_dict()
+        rec["difficulty"] = "hard_saboteur"
+        rec["is_saboteur"] = True
+        rec["mutation_ops"] = mut_ops
+        rec["evaded_gates"] = evaded_gates
+        rec["violated_lean_rules"] = violated_rules
+        rec["clean_saboteur_steps"] = [dict(x) for x in clean_raw]
+        rec["sabotaged_saboteur_steps"] = [dict(x) for x in sab_raw]
+        adapted.append(rec)
+    return adapted
+
+
+def synthesize_saboteur_records(
+    protocols: Sequence[Protocol],
+    *,
+    seed: int = 0,
+    max_per_protocol: int = 2,
+) -> list[dict[str, Any]]:
+    """Synthesize stealth hard-negative saboteur twins that evade stateless bounds gates."""
+    rng = random.Random(seed)
+    out: list[dict[str, Any]] = []
+
+    for proto in protocols:
+        steps = list(proto.steps)
+        correct_dicts = steps_to_dicts(steps)
+        emitted = 0
+
+        # 1. Dead-volume / stoichiometry shave inside [15, 280] uL (evades stateless baseline).
+        transfer_idxs = [
+            i
+            for i, s in enumerate(steps)
+            if isinstance(s, TransferStep)
+            and s.unit == "uL"
+            and (is_well_ref(s.source) or is_well_ref(s.dest))
+        ]
+        if transfer_idxs and emitted < max_per_protocol:
+            t_idx = transfer_idxs[rng.randrange(len(transfer_idxs))]
+            t_step = steps[t_idx]
+            assert isinstance(t_step, TransferStep)
+            cand_vol = _clean_float(
+                110.0
+                if abs(t_step.volume - 110.0) >= 5.0
+                else min(260.0, max(15.0, t_step.volume * 0.75))
+            )
+            if cand_vol != t_step.volume:
+                sab_steps = list(steps)
+                sab_steps[t_idx] = replace(t_step, volume=cand_vol)
+                sab_dicts = steps_to_dicts(sab_steps)
+                if predict_error(sab_dicts)["label"] == "clean":
+                    rec = TwinRecord(
+                        id=f"{proto.protocol_id}:saboteur:{emitted}",
+                        protocol_id=proto.protocol_id,
+                        correct_steps=correct_dicts,
+                        corrupted_steps=sab_dicts,
+                        label="wrong_volume",
+                        step_index=t_idx,
+                        original_value=t_step.volume,
+                        new_value=cand_vol,
+                        description=(
+                            f"Stealth dead-volume saboteur at step {t_idx}: "
+                            f"shifted transfer from {t_step.volume:g} uL to {cand_vol:g} uL."
+                        ),
+                    ).to_dict()
+                    rec["difficulty"] = "hard_saboteur"
+                    rec["is_saboteur"] = True
+                    rec["mutation_ops"] = ["shave_dead_volume"]
+                    rec["evaded_gates"] = ["gen0_scalar_volume_gate", "gen1_bitmask_gate"]
+                    rec["violated_lean_rules"] = ["recoverable_dead_volume_reserve"]
+                    out.append(rec)
+                    emitted += 1
+
+        # 2. High-temperature unsealed thermal drift inside [4, 95] C (evades stateless baseline).
+        inc_idxs = _incubate_indices(steps)
+        if inc_idxs and emitted < max_per_protocol:
+            i_idx = inc_idxs[rng.randrange(len(inc_idxs))]
+            i_step = steps[i_idx]
+            assert isinstance(i_step, IncubateStep)
+            cand_temp = 88.0 if abs(i_step.temperature - 88.0) >= 2.0 else 82.0
+            sab_steps = list(steps)
+            sab_steps[i_idx] = replace(i_step, temperature=cand_temp)
+            sab_dicts = steps_to_dicts(sab_steps)
+            if predict_error(sab_dicts)["label"] == "clean":
+                rec = TwinRecord(
+                    id=f"{proto.protocol_id}:saboteur:{emitted}",
+                    protocol_id=proto.protocol_id,
+                    correct_steps=correct_dicts,
+                    corrupted_steps=sab_dicts,
+                    label="wrong_temperature",
+                    step_index=i_idx,
+                    original_value=i_step.temperature,
+                    new_value=cand_temp,
+                    description=(
+                        f"Stealth high-temperature saboteur at step {i_idx}: "
+                        f"unsealed {cand_temp:g} C thermal excursion."
+                    ),
+                ).to_dict()
+                rec["difficulty"] = "hard_saboteur"
+                rec["is_saboteur"] = True
+                rec["mutation_ops"] = ["drop_high_temp_seal"]
+                rec["evaded_gates"] = ["gen0_scalar_volume_gate", "gen1_bitmask_gate"]
+                rec["violated_lean_rules"] = ["high_temp_seal_required"]
+                out.append(rec)
+                emitted += 1
+
+    # 3. Also load curated HardNegativeTwinPair evolutions when community_extensions is present.
+    import importlib.util
+    from pathlib import Path
+
+    evolver_path = (
+        Path(__file__).resolve().parents[2] / "community_extensions" / "saboteur_evolver.py"
+    )
+    if evolver_path.is_file():
+        spec = importlib.util.spec_from_file_location("_twinstep_saboteur_evolver", evolver_path)
+        if spec is not None and spec.loader is not None:
+            mod: Any = importlib.util.module_from_spec(spec)
+            import sys
+
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            evo_report = mod.evolve_saboteurs(generations=4, pop_size=10, seed=seed)
+            curated = evo_report.get("curated_hard_negatives", [])
+            if isinstance(curated, list):
+                out.extend(saboteur_pairs_to_records(curated[:4], id_prefix="evolved"))
+
+    return out
+
+
 def generate_dataset(
     protocols: Sequence[Protocol],
     n_twins: int = 5,
@@ -623,6 +1115,8 @@ def generate_dataset(
     n_ordering: int | None = None,
     *,
     k_errors: int = 1,
+    difficulty: str = "all",
+    include_saboteurs: bool = False,
 ) -> list[dict[str, Any]]:
     """Generate deterministic error-detection twins, clean negatives, and ordering records.
 
@@ -635,6 +1129,10 @@ def generate_dataset(
         raise ValueError("n_twins and n_clean must be non-negative")
     if k_errors < 1:
         raise ValueError("k_errors must be >= 1")
+    if difficulty not in DIFFICULTY_FILTERS:
+        raise ValueError(
+            f"unsupported difficulty {difficulty!r}; expected one of {DIFFICULTY_FILTERS}"
+        )
     ordering_count = n_twins if n_ordering is None else n_ordering
     if ordering_count < 0:
         raise ValueError("n_ordering must be non-negative")
@@ -684,7 +1182,10 @@ def generate_dataset(
                     f"available (requested {n_twins})",
                     stacklevel=2,
                 )
-            records.extend(twin.to_dict() for twin in twins)
+            for twin in twins:
+                t_dict = twin.to_dict()
+                t_dict["difficulty"] = classify_difficulty(t_dict)
+                records.append(t_dict)
         else:
             multi_twins: list[MultiTwinRecord] = []
             while len(multi_twins) < n_twins:
@@ -710,7 +1211,10 @@ def generate_dataset(
                     f"{k_errors}-error twins available (requested {n_twins})",
                     stacklevel=2,
                 )
-            records.extend(mtwin.to_dict() for mtwin in multi_twins)
+            for mtwin in multi_twins:
+                m_dict = mtwin.to_dict()
+                m_dict["difficulty"] = classify_difficulty(m_dict)
+                records.append(m_dict)
 
         # Clean negatives are identical copies of the protocol, so emit at most one.
         if n_clean > 0:
@@ -719,19 +1223,21 @@ def generate_dataset(
                     protocol,
                     record_id=f"{protocol.protocol_id}:clean:0",
                 )
-                records.append(clean.to_dict())
+                c_dict = clean.to_dict()
+                c_dict["difficulty"] = classify_difficulty(c_dict)
+                records.append(c_dict)
             else:
-                records.append(
-                    MultiTwinRecord(
-                        id=f"{protocol.protocol_id}:clean:0",
-                        protocol_id=protocol.protocol_id,
-                        correct_steps=correct_dicts,
-                        corrupted_steps=[dict(s) for s in correct_dicts],
-                        labels=[],
-                        step_indices=[],
-                        descriptions=["No error injected (clean negative)."],
-                    ).to_dict()
-                )
+                cm_dict = MultiTwinRecord(
+                    id=f"{protocol.protocol_id}:clean:0",
+                    protocol_id=protocol.protocol_id,
+                    correct_steps=correct_dicts,
+                    corrupted_steps=[dict(s) for s in correct_dicts],
+                    labels=[],
+                    step_indices=[],
+                    descriptions=["No error injected (clean negative)."],
+                ).to_dict()
+                cm_dict["difficulty"] = classify_difficulty(cm_dict)
+                records.append(cm_dict)
 
         if ordering_count > 0 and len(protocol.steps) >= 2:
             if not _has_distinct_steps(protocol.steps):
@@ -749,6 +1255,11 @@ def generate_dataset(
                         precomputed_constraints=gold_constraints,
                         precomputed_correct_dicts=correct_dicts,
                     )
-                    records.append(order_rec.to_dict())
+                    o_dict = order_rec.to_dict()
+                    o_dict["difficulty"] = classify_difficulty(o_dict)
+                    records.append(o_dict)
 
-    return records
+    if include_saboteurs:
+        records.extend(synthesize_saboteur_records(protocols, seed=seed))
+
+    return filter_records_by_difficulty(records, difficulty=difficulty)

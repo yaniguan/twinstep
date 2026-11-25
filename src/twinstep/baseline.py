@@ -9,6 +9,7 @@ from typing import Any
 from twinstep.dependencies import (
     canonical_well,
     find_order_violations,
+    infer_default_plate,
     is_well_ref,
     plate_of,
     step_plates,
@@ -20,6 +21,7 @@ from twinstep.schema import (
     Step,
     TransferStep,
     WashStep,
+    canonical_plate,
     step_from_dict,
 )
 
@@ -172,14 +174,32 @@ def _unmixed_well_on_plates(
     plates: set[str],
     fill_counts: dict[str, int],
     mixed_since_fill: dict[str, bool],
+    default_plate: str = "plate1",
+    excluded_wells: set[str] | None = None,
 ) -> str | None:
     for well in sorted(fill_counts):
+        if excluded_wells is not None and well in excluded_wells:
+            continue
         if fill_counts[well] < 2 or mixed_since_fill.get(well, False):
             continue
-        w_plate = plate_of(well)
+        w_plate = plate_of(well, default_plate)
         if not plates or (w_plate is not None and w_plate in plates):
             return well
     return None
+
+
+def _wells_of_step(step: Step, default_plate: str) -> set[str]:
+    wells: set[str] = set()
+    if isinstance(step, TransferStep):
+        if is_well_ref(step.source):
+            wells.add(canonical_well(step.source, default_plate))
+        if is_well_ref(step.dest):
+            wells.add(canonical_well(step.dest, default_plate))
+    elif isinstance(step, MixStep) and is_well_ref(step.well):
+        wells.add(canonical_well(step.well, default_plate))
+    elif isinstance(step, WashStep) and step.well is not None:
+        wells.add(canonical_well(step.well, default_plate))
+    return wells
 
 
 def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
@@ -193,6 +213,8 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                 return _classify_schema_error(item, idx, exc)
         else:
             steps.append(item)
+
+    default_plate = infer_default_plate(steps)
 
     # 1. Dependency order violations.
     violations = find_order_violations(steps)
@@ -218,7 +240,7 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
     for idx, step in enumerate(steps):
         if isinstance(step, TransferStep):
             if is_well_ref(step.source):
-                src_w = canonical_well(step.source)
+                src_w = canonical_well(step.source, default_plate)
                 if fill_counts.get(src_w, 0) == 0:
                     return {
                         "label": "missing_step",
@@ -232,12 +254,12 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                         "reason": f"step {idx} transfers from unmixed well {step.source}",
                     }
             if is_well_ref(step.dest):
-                dst_w = canonical_well(step.dest)
+                dst_w = canonical_well(step.dest, default_plate)
                 fill_counts[dst_w] = fill_counts.get(dst_w, 0) + 1
                 mixed_since_fill[dst_w] = False
         elif isinstance(step, MixStep):
             if is_well_ref(step.well):
-                w = canonical_well(step.well)
+                w = canonical_well(step.well, default_plate)
                 if fill_counts.get(w, 0) == 0:
                     return {
                         "label": "missing_step",
@@ -246,7 +268,12 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                     }
                 mixed_since_fill[w] = True
         elif isinstance(step, IncubateStep):
-            unmixed = _unmixed_well_on_plates(step_plates(step), fill_counts, mixed_since_fill)
+            unmixed = _unmixed_well_on_plates(
+                step_plates(step, default_plate),
+                fill_counts,
+                mixed_since_fill,
+                default_plate,
+            )
             if unmixed is not None:
                 return {
                     "label": "missing_step",
@@ -255,7 +282,7 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                 }
         elif isinstance(step, WashStep):
             if step.well is not None:
-                w = canonical_well(step.well)
+                w = canonical_well(step.well, default_plate)
                 if fill_counts.get(w, 0) >= 2 and not mixed_since_fill.get(w, False):
                     return {
                         "label": "missing_step",
@@ -265,7 +292,10 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                 fill_counts[w] = 0
                 mixed_since_fill[w] = False
             elif step.plate is not None:
-                unmixed = _unmixed_well_on_plates({step.plate}, fill_counts, mixed_since_fill)
+                p_norm = canonical_plate(step.plate)
+                unmixed = _unmixed_well_on_plates(
+                    {p_norm}, fill_counts, mixed_since_fill, default_plate
+                )
                 if unmixed is not None:
                     return {
                         "label": "missing_step",
@@ -276,11 +306,14 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                         ),
                     }
                 for w in list(fill_counts):
-                    if plate_of(w) == step.plate:
+                    if plate_of(w, default_plate) == p_norm:
                         fill_counts[w] = 0
                         mixed_since_fill[w] = False
         elif isinstance(step, ReadStep):
-            unmixed = _unmixed_well_on_plates({step.plate}, fill_counts, mixed_since_fill)
+            p_norm = canonical_plate(step.plate)
+            unmixed = _unmixed_well_on_plates(
+                {p_norm}, fill_counts, mixed_since_fill, default_plate
+            )
             if unmixed is not None:
                 return {
                     "label": "missing_step",
@@ -333,12 +366,168 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
             seen_indices.add(idx)
 
     clean_pairs = [(idx, s) for idx, s in enumerate(valid_steps) if s is not None]
-    if len(clean_pairs) == len(valid_steps):
+    if clean_pairs:
         only_steps = [s for _, s in clean_pairs]
-        for v_idx, _, reason in find_order_violations(only_steps):
-            if v_idx not in seen_indices:
-                found.append((v_idx, "swap_order", reason))
-                seen_indices.add(v_idx)
+        default_plate = infer_default_plate(only_steps)
+        swapped_wells: set[str] = set()
+        for sub_v_idx, sub_other_idx, reason in find_order_violations(only_steps):
+            orig_idx = clean_pairs[sub_v_idx][0]
+            swapped_wells.update(_wells_of_step(only_steps[sub_v_idx], default_plate))
+            if 0 <= sub_other_idx < len(only_steps):
+                swapped_wells.update(_wells_of_step(only_steps[sub_other_idx], default_plate))
+            if orig_idx not in seen_indices:
+                found.append((orig_idx, "swap_order", reason))
+                seen_indices.add(orig_idx)
+
+        ever_filled = {
+            canonical_well(s.dest, default_plate)
+            for _, s in clean_pairs
+            if isinstance(s, TransferStep) and is_well_ref(s.dest)
+        }
+        fill_counts: dict[str, int] = {}
+        mixed_since_fill: dict[str, bool] = {}
+        for orig_idx, step in clean_pairs:
+            if isinstance(step, TransferStep):
+                if is_well_ref(step.source):
+                    src_w = canonical_well(step.source, default_plate)
+                    if (
+                        fill_counts.get(src_w, 0) == 0
+                        and src_w not in ever_filled
+                        and src_w not in swapped_wells
+                        and orig_idx not in seen_indices
+                    ):
+                        found.append(
+                            (
+                                orig_idx,
+                                "missing_step",
+                                f"step {orig_idx} transfers from uninitialized well {step.source}",
+                            )
+                        )
+                        seen_indices.add(orig_idx)
+                    elif (
+                        fill_counts.get(src_w, 0) >= 2
+                        and not mixed_since_fill.get(src_w, False)
+                        and src_w not in swapped_wells
+                        and orig_idx not in seen_indices
+                    ):
+                        found.append(
+                            (
+                                orig_idx,
+                                "missing_step",
+                                f"step {orig_idx} transfers from unmixed well {step.source}",
+                            )
+                        )
+                        seen_indices.add(orig_idx)
+                        mixed_since_fill[src_w] = True
+                if is_well_ref(step.dest):
+                    dst_w = canonical_well(step.dest, default_plate)
+                    fill_counts[dst_w] = fill_counts.get(dst_w, 0) + 1
+                    mixed_since_fill[dst_w] = False
+            elif isinstance(step, MixStep):
+                if is_well_ref(step.well):
+                    w = canonical_well(step.well, default_plate)
+                    if (
+                        fill_counts.get(w, 0) == 0
+                        and w not in ever_filled
+                        and w not in swapped_wells
+                        and orig_idx not in seen_indices
+                    ):
+                        found.append(
+                            (
+                                orig_idx,
+                                "missing_step",
+                                f"step {orig_idx} mixes uninitialized well {step.well}",
+                            )
+                        )
+                        seen_indices.add(orig_idx)
+                    mixed_since_fill[w] = True
+            elif isinstance(step, IncubateStep):
+                unmixed = _unmixed_well_on_plates(
+                    step_plates(step, default_plate),
+                    fill_counts,
+                    mixed_since_fill,
+                    default_plate,
+                    excluded_wells=swapped_wells,
+                )
+                if unmixed is not None and orig_idx not in seen_indices:
+                    found.append(
+                        (
+                            orig_idx,
+                            "missing_step",
+                            f"step {orig_idx} incubates before mixing multi-reagent well {unmixed}",
+                        )
+                    )
+                    seen_indices.add(orig_idx)
+                    mixed_since_fill[unmixed] = True
+            elif isinstance(step, WashStep):
+                if step.well is not None:
+                    w = canonical_well(step.well, default_plate)
+                    if (
+                        fill_counts.get(w, 0) >= 2
+                        and not mixed_since_fill.get(w, False)
+                        and w not in swapped_wells
+                        and orig_idx not in seen_indices
+                    ):
+                        found.append(
+                            (
+                                orig_idx,
+                                "missing_step",
+                                f"step {orig_idx} washes unmixed multi-reagent well {w}",
+                            )
+                        )
+                        seen_indices.add(orig_idx)
+                    fill_counts[w] = 0
+                    mixed_since_fill[w] = False
+                elif step.plate is not None:
+                    p_norm = canonical_plate(step.plate)
+                    unmixed = _unmixed_well_on_plates(
+                        {p_norm},
+                        fill_counts,
+                        mixed_since_fill,
+                        default_plate,
+                        excluded_wells=swapped_wells,
+                    )
+                    if unmixed is not None and orig_idx not in seen_indices:
+                        found.append(
+                            (
+                                orig_idx,
+                                "missing_step",
+                                f"step {orig_idx} washes {step.plate} before mixing "
+                                f"multi-reagent well {unmixed}",
+                            )
+                        )
+                        seen_indices.add(orig_idx)
+                    for w in list(fill_counts):
+                        if plate_of(w, default_plate) == p_norm:
+                            fill_counts[w] = 0
+                            mixed_since_fill[w] = False
+            elif isinstance(step, ReadStep):
+                p_norm = canonical_plate(step.plate)
+                unmixed = _unmixed_well_on_plates(
+                    {p_norm},
+                    fill_counts,
+                    mixed_since_fill,
+                    default_plate,
+                    excluded_wells=swapped_wells,
+                )
+                if unmixed is not None and orig_idx not in seen_indices:
+                    found.append(
+                        (
+                            orig_idx,
+                            "missing_step",
+                            f"step {orig_idx} reads {step.plate} before mixing "
+                            f"multi-reagent well {unmixed}",
+                        )
+                    )
+                    seen_indices.add(orig_idx)
+                    mixed_since_fill[unmixed] = True
+
+    has_any_read = any(isinstance(s, ReadStep) for _, s in clean_pairs) or any(
+        isinstance(item, dict) and item.get("type") == "read" for item in raw_steps
+    )
+    if not has_any_read and len(raw_steps) >= 2 and len(raw_steps) not in seen_indices:
+        found.append((len(raw_steps), "missing_step", "protocol is missing a final read step"))
+        seen_indices.add(len(raw_steps))
 
     found.sort(key=lambda item: item[0])
     return {
@@ -362,23 +551,76 @@ def _stage_rank(step: Step | None) -> int:
     return 5
 
 
-def _assign_plate_cycles(steps: Sequence[Step | None]) -> list[int]:
-    """Assign each step to a 0-based cycle segment when multiple read/wash barriers exist."""
+def _transfer_role_key(step: TransferStep, orig_idx: int) -> tuple[int, float, int]:
+    src_low = step.source.lower()
+    if any(
+        tok in src_low
+        for tok in ("buf", "coat", "block", "sample", "water", "pbs", "media", "diluent")
+    ):
+        role = 0
+    elif any(
+        tok in src_low
+        for tok in (
+            "substrate",
+            "dye",
+            "detect",
+            "conjugate",
+            "stop",
+            "quench",
+            "elut",
+            "develop",
+            "secondary",
+        )
+    ):
+        role = 2
+    else:
+        role = 1
+    return (role, -_volume_in_ul(step.volume, step.unit), orig_idx)
+
+
+def _transfer_idx_key(steps: Sequence[Step | None], s_idx: int) -> tuple[int, float, int]:
+    st = steps[s_idx]
+    if isinstance(st, TransferStep):
+        return _transfer_role_key(st, s_idx)
+    return (1, 0.0, s_idx)
+
+
+def _mix_idx_key(steps: Sequence[Step | None], m_idx: int) -> tuple[float, int, int]:
+    st = steps[m_idx]
+    if isinstance(st, MixStep):
+        return (_volume_in_ul(st.volume, st.unit), st.cycles, m_idx)
+    return (0.0, 0, m_idx)
+
+
+def _assign_plate_cycles(
+    steps: Sequence[Step | None],
+    default_plate: str = "plate1",
+) -> dict[str, list[int]]:
+    """Assign each step per-plate 0-based cycle coordinates across barrier segments."""
     n = len(steps)
-    cycles = [0] * n
+    all_plates: set[str] = set()
+    for step in steps:
+        if step is not None:
+            all_plates.update(step_plates(step, default_plate))
+    if not all_plates and any(isinstance(s, IncubateStep) for s in steps):
+        all_plates.add(canonical_plate(default_plate))
 
     plate_reads: dict[str, list[int]] = {}
     plate_washes: dict[str, list[int]] = {}
     plate_incubates: dict[str, list[int]] = {}
     for idx, step in enumerate(steps):
         if isinstance(step, ReadStep):
-            plate_reads.setdefault(step.plate, []).append(idx)
+            plate_reads.setdefault(canonical_plate(step.plate), []).append(idx)
         elif isinstance(step, WashStep) and step.plate is not None and step.well is None:
-            plate_washes.setdefault(step.plate, []).append(idx)
-        elif isinstance(step, IncubateStep) and step.plate is not None:
-            plate_incubates.setdefault(step.plate, []).append(idx)
+            plate_washes.setdefault(canonical_plate(step.plate), []).append(idx)
+        elif isinstance(step, IncubateStep):
+            if step.plate is not None:
+                plate_incubates.setdefault(canonical_plate(step.plate), []).append(idx)
+            else:
+                for p in all_plates:
+                    plate_incubates.setdefault(p, []).append(idx)
 
-    all_plates = set(plate_reads) | set(plate_washes) | set(plate_incubates)
+    plate_cycles: dict[str, list[int]] = {p: [0] * n for p in all_plates}
     multi_plates = {
         p
         for p in all_plates
@@ -390,7 +632,7 @@ def _assign_plate_cycles(steps: Sequence[Step | None]) -> list[int]:
         >= 2
     }
     if not multi_plates:
-        return cycles
+        return plate_cycles
 
     # Estimate causal liquid-flow depth per well from external-source transfers (depth 0).
     well_depth: dict[str, int] = {}
@@ -400,7 +642,7 @@ def _assign_plate_cycles(steps: Sequence[Step | None]) -> list[int]:
             and not is_well_ref(step.source)
             and is_well_ref(step.dest)
         ):
-            well_depth.setdefault(canonical_well(step.dest), 0)
+            well_depth.setdefault(canonical_well(step.dest, default_plate), 0)
     changed = True
     while changed:
         changed = False
@@ -410,64 +652,107 @@ def _assign_plate_cycles(steps: Sequence[Step | None]) -> list[int]:
                 and is_well_ref(step.source)
                 and is_well_ref(step.dest)
             ):
-                s_w = canonical_well(step.source)
-                d_w = canonical_well(step.dest)
+                s_w = canonical_well(step.source, default_plate)
+                d_w = canonical_well(step.dest, default_plate)
                 if s_w in well_depth and d_w not in well_depth:
                     well_depth[d_w] = well_depth[s_w] + 1
                     changed = True
 
+    max_depth = max(well_depth.values(), default=0)
+
     for plate in sorted(multi_plates):
+        p_cyc = plate_cycles[plate]
         reads = plate_reads.get(plate, [])
         washes = plate_washes.get(plate, [])
         incubates = plate_incubates.get(plate, [])
         num_cycles = max(len(reads), len(washes), len(incubates))
 
         for c_idx, step_idx in enumerate(reads):
-            # Spread reads toward the end when fewer reads than washes; otherwise 1 per cycle.
             offset = num_cycles - len(reads) if len(reads) < num_cycles else 0
-            cycles[step_idx] = min(num_cycles - 1, offset + c_idx)
+            p_cyc[step_idx] = min(num_cycles - 1, offset + c_idx)
         for c_idx, step_idx in enumerate(washes):
-            cycles[step_idx] = min(num_cycles - 1, c_idx)
+            p_cyc[step_idx] = min(num_cycles - 1, c_idx)
         for c_idx, step_idx in enumerate(incubates):
-            cycles[step_idx] = min(num_cycles - 1, c_idx)
+            inc_offset = (
+                num_cycles - len(incubates)
+                if (len(incubates) < num_cycles and len(washes) > 0)
+                else 0
+            )
+            p_cyc[step_idx] = min(num_cycles - 1, inc_offset + c_idx)
 
-        transfers_by_well: dict[str, list[int]] = {}
+        incoming_by_well: dict[str, list[int]] = {}
+        outgoing_only: list[int] = []
         mixes_by_well: dict[str, list[int]] = {}
         for idx, step in enumerate(steps):
-            if step is None or plate not in step_plates(step):
+            if step is None or plate not in step_plates(step, default_plate):
                 continue
             if isinstance(step, TransferStep):
-                key_w = (
-                    canonical_well(step.dest)
-                    if is_well_ref(step.dest)
-                    else canonical_well(step.source)
+                dst_p = (
+                    plate_of(step.dest, default_plate) if is_well_ref(step.dest) else None
                 )
-                transfers_by_well.setdefault(key_w, []).append(idx)
+                src_p = (
+                    plate_of(step.source, default_plate) if is_well_ref(step.source) else None
+                )
+                if dst_p == plate:
+                    dst_w = canonical_well(step.dest, default_plate)
+                    incoming_by_well.setdefault(dst_w, []).append(idx)
+                elif src_p == plate:
+                    outgoing_only.append(idx)
             elif isinstance(step, MixStep):
-                mixes_by_well.setdefault(canonical_well(step.well), []).append(idx)
+                mixes_by_well.setdefault(canonical_well(step.well, default_plate), []).append(idx)
 
-        max_depth = max(well_depth.values(), default=0)
-        for well, idxs in transfers_by_well.items():
-            if max_depth >= 1 and len(idxs) == 1:
+        well_max_cycle: dict[str, int] = {}
+        for well, idxs in incoming_by_well.items():
+            if len(idxs) == 1:
                 src_step = steps[idxs[0]]
                 assert isinstance(src_step, TransferStep)
-                if is_well_ref(src_step.source):
-                    d = well_depth.get(canonical_well(src_step.source), 0) + 1
+                if max_depth >= 1 and is_well_ref(src_step.source):
+                    d = well_depth.get(canonical_well(src_step.source, default_plate), 0) + 1
                 else:
                     d = 0
-                cycles[idxs[0]] = min(num_cycles - 1, d)
+                cyc_val = min(num_cycles - 1, d)
+                p_cyc[idxs[0]] = cyc_val
+                well_max_cycle[well] = max(well_max_cycle.get(well, 0), cyc_val)
             else:
-                for pos, step_idx in enumerate(idxs):
-                    cycles[step_idx] = min(num_cycles - 1, (pos * num_cycles) // max(1, len(idxs)))
+                ordered_idxs = sorted(
+                    idxs,
+                    key=lambda s_idx: _transfer_idx_key(steps, s_idx),
+                )
+                for pos, step_idx in enumerate(ordered_idxs):
+                    cyc_val = min(
+                        num_cycles - 1, (pos * num_cycles) // max(1, len(ordered_idxs))
+                    )
+                    p_cyc[step_idx] = cyc_val
+                    well_max_cycle[well] = max(well_max_cycle.get(well, 0), cyc_val)
+
+        for step_idx in outgoing_only:
+            out_step = steps[step_idx]
+            assert isinstance(out_step, TransferStep)
+            src_w = canonical_well(out_step.source, default_plate)
+            if src_w in well_max_cycle:
+                p_cyc[step_idx] = well_max_cycle[src_w]
+            else:
+                p_cyc[step_idx] = min(num_cycles - 1, well_depth.get(src_w, 0) + 1)
 
         for well, idxs in mixes_by_well.items():
-            if max_depth >= 1 and len(idxs) == 1 and well in well_depth:
-                cycles[idxs[0]] = min(num_cycles - 1, well_depth[well])
+            if (
+                max_depth >= 1
+                and len(idxs) == 1
+                and well in well_depth
+                and len(incoming_by_well.get(well, [])) <= 1
+            ):
+                p_cyc[idxs[0]] = min(num_cycles - 1, well_depth[well])
             else:
-                for pos, step_idx in enumerate(idxs):
-                    cycles[step_idx] = min(num_cycles - 1, (pos * num_cycles) // max(1, len(idxs)))
+                ordered_mixes = sorted(
+                    idxs,
+                    key=lambda m_idx: _mix_idx_key(steps, m_idx),
+                )
+                for pos, step_idx in enumerate(ordered_mixes):
+                    p_cyc[step_idx] = min(
+                        num_cycles - 1, (pos * num_cycles) // max(1, len(ordered_mixes))
+                    )
 
-    return cycles
+    return plate_cycles
 
 
 def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
@@ -476,8 +761,8 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
     Single-cycle protocols use canonical stage ordering
     (``transfer -> mix -> incubate -> wash -> read``) plus well liquid-flow edges.
     When multiple ``ReadStep``/``WashStep``/``IncubateStep`` barriers appear on the same
-    plate, steps are partitioned into cycle segments first, and cycle-forming reciprocal
-    well transfers are oriented using external reservoir fills to prevent graph 2-cycles.
+    plate, steps are partitioned into per-plate cycle segments first, and cycle-forming
+    reciprocal well transfers are oriented using external reservoir fills.
     """
     steps: list[Step | None] = []
     for item in raw_steps:
@@ -490,11 +775,22 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
             steps.append(item)
 
     n = len(steps)
-    cycles = _assign_plate_cycles(steps)
-    has_multi_cycles = any(c > 0 for c in cycles)
+    default_plate = infer_default_plate(steps)
+    plate_cycles = _assign_plate_cycles(steps, default_plate)
+    all_plates = set(plate_cycles)
+    multi_plates = {
+        p for p, cyc_list in plate_cycles.items() if any(c > 0 for c in cyc_list)
+    }
+
+    def _effective_plates(step: Step | None) -> set[str]:
+        if step is None:
+            return set()
+        if isinstance(step, IncubateStep) and step.plate is None:
+            return set(all_plates)
+        return step_plates(step, default_plate)
 
     external_filled_wells: set[str] = {
-        canonical_well(s.dest)
+        canonical_well(s.dest, default_plate)
         for s in steps
         if isinstance(s, TransferStep) and not is_well_ref(s.source) and is_well_ref(s.dest)
     }
@@ -520,23 +816,60 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
             adj[u].add(v)
             indegree[v] += 1
 
-    # 1. Inter-cycle ordering edges when multiple cycles exist on a shared plate.
-    if has_multi_cycles:
-        for i in range(n):
-            si = steps[i]
-            if si is None:
-                continue
-            pi = step_plates(si)
-            for j in range(n):
-                sj = steps[j]
-                if i == j or sj is None:
-                    continue
-                if cycles[i] < cycles[j] and bool(pi & step_plates(sj)):
+    # 1. Inter-cycle ordering edges on shared multi-cycle plates only.
+    for p in sorted(multi_plates):
+        p_cyc = plate_cycles[p]
+        touching = [idx for idx in range(n) if p in _effective_plates(steps[idx])]
+        for i in touching:
+            for j in touching:
+                if i != j and p_cyc[i] < p_cyc[j]:
                     add_edge(i, j)
 
+    # 1b. Multi-mix sub-stages within the same (well, cycle): e.g. homogenize before quench.
+    well_cycle_transfers: dict[tuple[str, int], list[int]] = {}
+    well_cycle_mixes: dict[tuple[str, int], list[int]] = {}
+    for idx, step in enumerate(steps):
+        if isinstance(step, TransferStep) and is_well_ref(step.dest):
+            w = canonical_well(step.dest, default_plate)
+            pw = plate_of(step.dest, default_plate)
+            c = plate_cycles[pw][idx] if pw is not None and pw in plate_cycles else 0
+            well_cycle_transfers.setdefault((w, c), []).append(idx)
+        elif isinstance(step, MixStep) and is_well_ref(step.well):
+            w = canonical_well(step.well, default_plate)
+            pw = plate_of(step.well, default_plate)
+            c = plate_cycles[pw][idx] if pw is not None and pw in plate_cycles else 0
+            well_cycle_mixes.setdefault((w, c), []).append(idx)
+
+    multi_mix_keys: set[tuple[str, int]] = set()
+    for wc_key, mix_idxs in well_cycle_mixes.items():
+        if len(mix_idxs) < 2:
+            continue
+        multi_mix_keys.add(wc_key)
+        sorted_mixes = sorted(
+            mix_idxs,
+            key=lambda m_idx: _mix_idx_key(steps, m_idx),
+        )
+        for m_pos in range(len(sorted_mixes) - 1):
+            add_edge(sorted_mixes[m_pos], sorted_mixes[m_pos + 1])
+
+        t_idxs = well_cycle_transfers.get(wc_key, [])
+        if t_idxs:
+            sorted_transfers = sorted(
+                t_idxs,
+                key=lambda t_idx: _transfer_idx_key(steps, t_idx),
+            )
+            num_m = len(sorted_mixes)
+            for t_pos, t_idx in enumerate(sorted_transfers):
+                # Place quench/additive transfers after upstream mix; early fills before mix 0.
+                stage = min(
+                    num_m - 1,
+                    max(0, num_m - (len(sorted_transfers) - t_pos)),
+                )
+                add_edge(t_idx, sorted_mixes[stage])
+                if stage > 0:
+                    add_edge(sorted_mixes[stage - 1], t_idx)
+
     # 2. Well liquid flow and intra-cycle stage barriers.
-    # Add external-fill transfers before inter-well transfers so reciprocal A1<->A2 pairs
-    # orient cleanly from externally initialized wells outward.
     pair_indices = sorted(
         [(i, j) for i in range(n) for j in range(n) if i != j],
         key=lambda pair: (
@@ -544,7 +877,11 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
             if (
                 isinstance(steps[pair[0]], TransferStep)
                 and is_well_ref(steps[pair[0]].source)  # type: ignore[union-attr]
-                and canonical_well(steps[pair[0]].source) in external_filled_wells  # type: ignore[union-attr]
+                and canonical_well(
+                    steps[pair[0]].source,  # type: ignore[union-attr]
+                    default_plate,
+                )
+                in external_filled_wells
             )
             else 1
         ),
@@ -555,46 +892,55 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
         b = steps[j]
         if a is None or b is None:
             continue
-        if cycles[i] != cycles[j]:
-            continue
 
         if (
             isinstance(a, TransferStep)
             and isinstance(b, MixStep)
             and is_well_ref(a.dest)
-            and canonical_well(a.dest) == canonical_well(b.well)
+            and canonical_well(a.dest, default_plate) == canonical_well(b.well, default_plate)
         ):
-            add_edge(i, j)
+            w = canonical_well(a.dest, default_plate)
+            pw = plate_of(a.dest, default_plate)
+            ca = plate_cycles[pw][i] if pw is not None and pw in plate_cycles else 0
+            cb = plate_cycles[pw][j] if pw is not None and pw in plate_cycles else 0
+            if ca == cb and (w, ca) not in multi_mix_keys:
+                add_edge(i, j)
         elif (
             isinstance(a, TransferStep)
             and isinstance(b, TransferStep)
             and is_well_ref(a.dest)
-            and canonical_well(a.dest) == canonical_well(b.source)
+            and canonical_well(a.dest, default_plate) == canonical_well(b.source, default_plate)
         ):
-            add_edge(i, j)
+            pw = plate_of(a.dest, default_plate)
+            ca = plate_cycles[pw][i] if pw is not None and pw in plate_cycles else 0
+            cb = plate_cycles[pw][j] if pw is not None and pw in plate_cycles else 0
+            if ca == cb:
+                add_edge(i, j)
         elif (
             isinstance(a, MixStep)
             and isinstance(b, TransferStep)
             and is_well_ref(a.well)
-            and canonical_well(a.well) == canonical_well(b.source)
+            and canonical_well(a.well, default_plate) == canonical_well(b.source, default_plate)
         ):
-            add_edge(i, j)
+            pw = plate_of(a.well, default_plate)
+            ca = plate_cycles[pw][i] if pw is not None and pw in plate_cycles else 0
+            cb = plate_cycles[pw][j] if pw is not None and pw in plate_cycles else 0
+            if ca == cb:
+                add_edge(i, j)
 
-        pa = step_plates(a)
-        pb = step_plates(b)
-        same_plate = (
-            bool(pa & pb)
-            or (isinstance(a, IncubateStep) and a.plate is None and bool(pb))
-            or (isinstance(b, IncubateStep) and b.plate is None and bool(pa))
-        )
-        if same_plate:
-            has_later_cycle = any(
-                cycles[k] > cycles[i] and bool(pa & step_plates(sk))
+        shared_plates = _effective_plates(a) & _effective_plates(b)
+        for p in sorted(shared_plates):
+            p_cyc = plate_cycles[p]
+            if p_cyc[i] != p_cyc[j]:
+                continue
+            p_is_multi = p in multi_plates
+            has_later_cycle = p_is_multi and any(
+                p_cyc[k] > p_cyc[i] and p in _effective_plates(sk)
                 for k, sk in enumerate(steps)
                 if sk is not None
             )
             if (
-                has_multi_cycles
+                p_is_multi
                 and isinstance(a, ReadStep)
                 and isinstance(b, WashStep)
                 and b.well is None
@@ -603,7 +949,7 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
                 add_edge(i, j)
             elif _stage_rank(a) < _stage_rank(b):
                 if (
-                    has_multi_cycles
+                    p_is_multi
                     and isinstance(a, WashStep)
                     and a.well is None
                     and isinstance(b, ReadStep)
@@ -615,10 +961,16 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
                 ):
                     add_edge(i, j)
 
+    def _step_cycle_rank(idx: int) -> int:
+        eff = _effective_plates(steps[idx])
+        if not eff:
+            return 0
+        return max(plate_cycles[p][idx] for p in eff if p in plate_cycles)
+
     heap: list[tuple[int, int, int]] = []
     for idx in range(n):
         if indegree[idx] == 0:
-            heapq.heappush(heap, (cycles[idx], _stage_rank(steps[idx]), idx))
+            heapq.heappush(heap, (_step_cycle_rank(idx), _stage_rank(steps[idx]), idx))
 
     order: list[int] = []
     visited = [False] * n
@@ -631,11 +983,18 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
         for v in sorted(adj[u]):
             indegree[v] -= 1
             if indegree[v] == 0:
-                heapq.heappush(heap, (cycles[v], _stage_rank(steps[v]), v))
+                heapq.heappush(heap, (_step_cycle_rank(v), _stage_rank(steps[v]), v))
 
     if len(order) < n:
         remaining = [i for i in range(n) if not visited[i]]
-        remaining.sort(key=lambda idx: (cycles[idx], indegree[idx], _stage_rank(steps[idx]), idx))
+        remaining.sort(
+            key=lambda idx: (
+                _step_cycle_rank(idx),
+                indegree[idx],
+                _stage_rank(steps[idx]),
+                idx,
+            )
+        )
         order.extend(remaining)
     return order
 

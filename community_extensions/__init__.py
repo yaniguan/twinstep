@@ -9,8 +9,11 @@ from community_extensions.saboteur_evolver import (
     check_gen1_bitmask_gate,
     check_gen2_stateful_lean_gate,
     check_twin_step_order,
+    dag_reachable,
     evolve_saboteurs,
+    is_topological_order_unique,
     run_benchmark,
+    transitive_reduction,
 )
 
 __all__ = [
@@ -22,6 +25,9 @@ __all__ = [
     "check_gen1_bitmask_gate",
     "check_gen2_stateful_lean_gate",
     "check_twin_step_order",
+    "dag_reachable",
     "evolve_saboteurs",
+    "is_topological_order_unique",
     "run_benchmark",
+    "transitive_reduction",
 ]

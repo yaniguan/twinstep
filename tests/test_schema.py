@@ -179,3 +179,80 @@ def test_load_protocol_yaml_fallback_when_pyyaml_absent(
     p2 = load_protocol(list_yaml)
     assert p2.protocol_id == "list_proto"
     assert len(p2.steps) == 2
+
+
+# Issue #29: PyYAML parity on document markers, quoted/escaped colon keys, underscores, & overflow
+def test_issue_29_parse_simple_yaml_pyyaml_parity_and_stdlib_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        import yaml as pyyaml
+    except ImportError:
+        pyyaml = None
+
+    doc_markers = (
+        "---\n"
+        '"protocol_id": "demo: 1"\n'
+        '"steps":\n'
+        '  - "type": transfer\n'
+        '    "source": "reservoir:buf"\n'
+        '    "dest": "plate1:A1"\n'
+        "    volume: 1_000\n"
+        "    unit: uL\n"
+        "  - type: read\n"
+        "    plate: plate1\n"
+        "    mode: absorbance\n"
+        "    wavelength: 1_000\n"
+        "...\n"
+    )
+    parsed_doc = _parse_simple_yaml(doc_markers)
+    assert list(parsed_doc.keys()) == ["protocol_id", "steps"]
+    assert parsed_doc["protocol_id"] == "demo: 1"
+    assert parsed_doc["steps"][1]["wavelength"] == 1000
+    assert isinstance(parsed_doc["steps"][1]["wavelength"], int)
+    if pyyaml is not None:
+        assert parsed_doc == pyyaml.safe_load(doc_markers)
+
+    escaped_fixture = (
+        '---\n'
+        '"key\\"with: colon": 42\n'
+        '"multiline": "line1\\nline2\\t\\"quoted\\\\"\n'
+        '"single_esc": \'plate:\'\'1\'\'\'\n'
+        "upper_true: TRUE\n"
+        "upper_false: FALSE\n"
+        "upper_null: NULL\n"
+        "sci_small: 1.0e-3\n"
+        "sci_short: 1e-3\n"
+        "...\n"
+    )
+    parsed_esc = _parse_simple_yaml(escaped_fixture)
+    assert parsed_esc['key"with: colon'] == 42
+    assert parsed_esc["multiline"] == 'line1\nline2\t"quoted\\'
+    assert parsed_esc["single_esc"] == "plate:'1'"
+    assert parsed_esc["upper_true"] is True
+    assert parsed_esc["upper_false"] is False
+    assert parsed_esc["upper_null"] is None
+    assert parsed_esc["sci_small"] == pytest.approx(0.001)
+    assert parsed_esc["sci_short"] == pytest.approx(0.001)
+    if pyyaml is not None:
+        # Compare all keys except `1e-3` where YAML 1.2 parses float vs PyYAML 1.1 string
+        sub_check = {k: v for k, v in parsed_esc.items() if k != "sci_short"}
+        pyyaml_loaded = pyyaml.safe_load(escaped_fixture)
+        pyyaml_loaded.pop("sci_short", None)
+        assert sub_check == pyyaml_loaded
+
+    # Overflow scientific notation propagates non-finite float to schema validator
+    overflow_step = _parse_simple_yaml(
+        "type: transfer\nsource: reservoir:a\ndest: plate1:A1\nvolume: 1.0e500\n"
+    )
+    with pytest.raises(ValueError, match="positive finite number"):
+        step_from_dict(overflow_step)
+
+    # Full stdlib-only (`yaml=None`) load_protocol round-trip with `---`/`...` and `1_000`
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    doc_file = tmp_path / "doc_markers.yaml"
+    doc_file.write_text(doc_markers, encoding="utf-8")
+    loaded = load_protocol(doc_file)
+    assert loaded.protocol_id == "demo: 1"
+    assert len(loaded.steps) == 2
+    assert isinstance(loaded.steps[1], ReadStep) and loaded.steps[1].wavelength == 1000

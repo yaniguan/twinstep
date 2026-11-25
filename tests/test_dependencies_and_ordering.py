@@ -225,3 +225,83 @@ def test_multi_cycle_and_reciprocal_transfers_in_predict_order() -> None:
     rec_r = make_ordering_record(reciprocal, rng, record_id="recip:0")
     pred_r = predict_order(rec_r.shuffled_steps)
     assert check_constraints(pred_r, [(a, b) for a, b in rec_r.constraints])
+
+
+# Issue #30: Case-insensitive plate IDs, custom bare-well binding, Mix->Transfer WAR, cross-plate
+def test_issue_30_case_plates_bare_well_binding_quench_war_and_cross_plate_cycles() -> None:
+    from twinstep.evaluate import evaluate_records
+
+    # 1. Case-variant plate prefix & custom single-plate bare-well binding
+    case_steps = [
+        TransferStep("reservoir:buf", "Plate1:a1", 100, "uL"),
+        ReadStep("plate1", "absorbance", 450),
+        MixStep("plate1:A1", 50, 3, "uL"),
+    ]
+    assert find_dependencies(case_steps) == [(0, 1), (1, 2)]
+
+    custom_plate_steps = [
+        TransferStep("reservoir:buf", "A1", 100, "uL"),
+        MixStep("A1", 50, 3, "uL"),
+        ReadStep("assay_plate", "absorbance", 450),
+    ]
+    assert find_dependencies(custom_plate_steps) == [(0, 1), (1, 2)]
+    assert predict_error(custom_plate_steps)["label"] == "clean"
+
+    # 2. Quench/stop reagent reordered BEFORE upstream homogenization mix is rejected
+    gold_steps = [
+        TransferStep("reservoir:buf", "plate1:A1", 100, "uL").to_dict(),
+        TransferStep("reservoir:enzyme", "plate1:A1", 20, "uL").to_dict(),
+        MixStep("plate1:A1", 60, 5, "uL").to_dict(),
+        TransferStep("reservoir:stop", "plate1:A1", 50, "uL").to_dict(),
+        MixStep("plate1:A1", 100, 5, "uL").to_dict(),
+        ReadStep("plate1", "absorbance", 450).to_dict(),
+    ]
+    premature_quench = [
+        gold_steps[0],
+        gold_steps[1],
+        gold_steps[3],
+        gold_steps[2],
+        gold_steps[4],
+        gold_steps[5],
+    ]
+    rep = evaluate_records(
+        [{"id": "r1", "task": "error_repair", "correct_steps": gold_steps}],
+        [{"id": "r1", "repaired_steps": premature_quench}],
+    )["error_repair"]
+    assert rep["dependency_equivalent"] == 0
+
+    # 3. Cross-plate aliquot in multi-cycle protocol + global IncubateStep(plate=None)
+    cross_plate = Protocol(
+        "cross_plate_kinetic",
+        (
+            TransferStep("reservoir:buf", "plate1:A1", 150, "uL"),
+            ReadStep("plate1", "absorbance", 450),
+            WashStep(plate="plate1", volume=300, cycles=3, unit="uL"),
+            TransferStep("reservoir:substrate", "plate1:A1", 100, "uL"),
+            TransferStep("plate1:A1", "plate2:A1", 50, "uL"),
+            ReadStep("plate1", "absorbance", 450),
+            ReadStep("plate2", "absorbance", 450),
+        ),
+    )
+    global_inc = Protocol(
+        "global_inc_2cycle",
+        (
+            TransferStep("reservoir:buf", "plate1:A1", 150, "uL"),
+            ReadStep("plate1", "absorbance", 450),
+            WashStep(plate="plate1", volume=300, cycles=3, unit="uL"),
+            TransferStep("reservoir:dye", "plate1:A1", 50, "uL"),
+            IncubateStep(plate=None, temperature=37, time=15, time_unit="min"),
+            ReadStep("plate1", "absorbance", 450),
+        ),
+    )
+    for seed in range(20):
+        rec_cp = make_ordering_record(cross_plate, random.Random(seed))
+        assert check_constraints(
+            predict_order(rec_cp.shuffled_steps),
+            [(c[0], c[1]) for c in rec_cp.constraints],
+        )
+        rec_gi = make_ordering_record(global_inc, random.Random(seed))
+        assert check_constraints(
+            predict_order(rec_gi.shuffled_steps),
+            [(c[0], c[1]) for c in rec_gi.constraints],
+        )
