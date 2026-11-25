@@ -189,6 +189,22 @@ def to_stepbot_dict(
     return out
 
 
+def _float_field(d: dict[str, Any], keys: tuple[str, ...], default: float) -> float:
+    for key in keys:
+        val = d.get(key)
+        if val is not None:
+            return float(val)
+    return default
+
+
+def _int_field(d: dict[str, Any], keys: tuple[str, ...], default: int) -> int:
+    for key in keys:
+        val = d.get(key)
+        if val is not None:
+            return int(val)
+    return default
+
+
 def _extract_delay_duration(dp: Any) -> tuple[float, str]:
     if isinstance(dp, (int, float)) and not isinstance(dp, bool):
         return max(1.0, float(dp)), "s"
@@ -275,9 +291,11 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
         if not isinstance(item, dict):
             idx += 1
             continue
-        if "transfer" in item and isinstance(item["transfer"], dict):
-            tp = item["transfer"]
-            vol = float(tp.get("volume", tp.get("volume_ul", 50.0)))
+        if ("transfer" in item and isinstance(item["transfer"], dict)) or (
+            "distribute" in item and isinstance(item["distribute"], dict)
+        ):
+            tp = item["transfer"] if "transfer" in item else item["distribute"]
+            vol = _float_field(tp, ("volume", "volume_ul"), 50.0)
             unit = str(tp.get("unit", "uL"))
             out_steps.extend(
                 expand_transfers(
@@ -291,8 +309,8 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
         elif "mix" in item and isinstance(item["mix"], dict):
             mp = item["mix"]
             well_raw = mp.get("wells", mp.get("well", mp.get("dst", mp.get("location"))))
-            vol = float(mp.get("volume", mp.get("volume_ul", 50.0)))
-            reps = int(mp.get("reps", mp.get("cycles", 3)))
+            vol = _float_field(mp, ("volume", "volume_ul"), 50.0)
+            reps = _int_field(mp, ("reps", "repetitions", "cycles"), 3)
             unit_m: Any = str(mp.get("unit", "uL"))
             if unit_m not in ("uL", "mL"):
                 unit_m = "uL"
@@ -350,7 +368,7 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
             dp = item["delay"]
             t_val, t_unit = _extract_delay_duration(dp)
             temp_d = (
-                float(dp.get("temperature", dp.get("temp_c", 25.0)))
+                _float_field(dp, ("temperature", "temp_c"), 25.0)
                 if isinstance(dp, dict)
                 else 25.0
             )
@@ -373,12 +391,7 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                 k for k in ("incubate", "temperature", "thermocycler", "temp_module") if k in item
             )
             cfg = item[mod_key] if isinstance(item[mod_key], dict) else {}
-            temp_val = float(
-                cfg.get(
-                    "temperature",
-                    cfg.get("temp_c", cfg.get("target", cfg.get("block_temp", 37.0))),
-                )
-            )
+            temp_val = _float_field(cfg, ("temperature", "temp_c", "target", "block_temp"), 37.0)
             plate_t = str(cfg["plate"]) if cfg.get("plate") is not None else None
             has_inline_dur = any(
                 k in cfg
@@ -414,8 +427,8 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                 WashStep(
                     plate=str(wp["plate"]) if wp.get("plate") is not None else None,
                     well=unmap_loc(str(wp["well"])) if wp.get("well") is not None else None,
-                    volume=float(wp.get("volume", wp.get("volume_ul", 300.0))),
-                    cycles=int(wp.get("cycles", wp.get("reps", 3))),
+                    volume=_float_field(wp, ("volume", "volume_ul"), 300.0),
+                    cycles=_int_field(wp, ("cycles", "reps", "repetitions"), 3),
                     unit=w_unit,
                 )
             )
@@ -433,7 +446,15 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
             idx += 1
         elif any(k in item for k in ("type", "op", "action")):
             op_name = str(item.get("type") or item.get("op") or item.get("action")).lower()
-            if op_name in ("pick_up_tip", "drop_tip", "pick_tip", "seal", "unseal", "home"):
+            if op_name in (
+                "pick_up_tip",
+                "drop_tip",
+                "pick_tip",
+                "seal",
+                "unseal",
+                "home",
+                "comment",
+            ):
                 idx += 1
                 continue
             if (
@@ -446,7 +467,11 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                 == "dispense"
             ):
                 disp = raw_steps[idx + 1]
-                vol = float(item.get("volume", item.get("volume_ul", disp.get("volume", 50.0))))
+                vol = _float_field(
+                    item,
+                    ("volume", "volume_ul"),
+                    _float_field(disp, ("volume", "volume_ul"), 50.0),
+                )
                 src_a = item.get("well", item.get("src", item.get("source", "reservoir:reagent")))
                 dst_d = disp.get("well", disp.get("dst", disp.get("dest", "plate1:A1")))
                 out_steps.extend(
@@ -454,8 +479,8 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                 )
                 idx += 2
                 continue
-            if op_name in ("transfer", "pipette", "dispense_reagent"):
-                vol = float(item.get("volume", item.get("volume_ul", 50.0)))
+            if op_name in ("transfer", "distribute", "pipette", "dispense_reagent"):
+                vol = _float_field(item, ("volume", "volume_ul"), 50.0)
                 out_steps.extend(
                     expand_transfers(
                         item.get("source", item.get("src")),
@@ -464,17 +489,27 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                         str(item.get("unit", "uL")),
                     )
                 )
+            elif op_name == "discard":
+                vol = _float_field(item, ("volume", "volume_ul"), 50.0)
+                out_steps.extend(
+                    expand_transfers(
+                        item.get("source", item.get("src")),
+                        "waste:trash",
+                        vol,
+                        str(item.get("unit", "uL")),
+                    )
+                )
             elif op_name == "mix":
                 w_raw = item.get("well", item.get("wells", item.get("dst")))
-                vol = float(item.get("volume", item.get("volume_ul", 50.0)))
-                reps = int(item.get("cycles", item.get("reps", 3)))
+                vol = _float_field(item, ("volume", "volume_ul"), 50.0)
+                reps = _int_field(item, ("cycles", "reps", "repetitions"), 3)
                 u_f: Any = str(item.get("unit", "uL"))
                 if u_f not in ("uL", "mL"):
                     u_f = "uL"
                 for w in unmap_locs(w_raw):
                     out_steps.append(MixStep(well=w, volume=vol, cycles=reps, unit=u_f))
             elif op_name in ("incubate", "delay", "wait", "thermocycle"):
-                temp_f = float(item.get("temperature", item.get("temp_c", 25.0)))
+                temp_f = _float_field(item, ("temperature", "temp_c"), 25.0)
                 t_val, t_unit = _extract_delay_duration(item)
                 plate_f = str(item["plate"]) if item.get("plate") is not None else None
                 out_steps.append(
@@ -497,8 +532,8 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                             if item.get("well") is not None
                             else None
                         ),
-                        volume=float(item.get("volume", item.get("volume_ul", 300.0))),
-                        cycles=int(item.get("cycles", item.get("reps", 3))),
+                        volume=_float_field(item, ("volume", "volume_ul"), 300.0),
+                        cycles=_int_field(item, ("cycles", "reps", "repetitions"), 3),
                         unit=u_w,
                     )
                 )

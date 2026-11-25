@@ -424,8 +424,8 @@ def find_order_violations(
                 break
             if isinstance(step_j, TransferStep) and plate in step_plates(step_j, default_plate):
                 has_later_read = any(
-                    isinstance(steps[m], ReadStep) and canonical_plate(steps[m].plate) == plate
-                    for m in range(j + 1, n)
+                    isinstance(s_m, ReadStep) and canonical_plate(s_m.plate) == plate
+                    for s_m in steps[j + 1 :]
                 )
                 if not prior_prep or not has_later_read:
                     violations.append(
