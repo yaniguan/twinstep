@@ -1,0 +1,12 @@
+[
+  {"type": "transfer", "source": "reservoir:nuclease_free_water", "dest": "plate1:C01", "volume": 6, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:nuclease_free_water", "dest": "plate1:C02", "volume": 6, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:cdna_template", "dest": "plate1:C01", "volume": 4, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:cdna_template", "dest": "plate1:C02", "volume": 4, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:qpcr_sybr_mastermix", "dest": "plate1:C01", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:qpcr_sybr_mastermix", "dest": "plate1:C02", "volume": 10, "unit": "uL"},
+  {"type": "mix", "well": "plate1:C01", "volume": 12, "unit": "uL", "cycles": 5},
+  {"type": "mix", "well": "plate1:C02", "volume": 12, "unit": "uL", "cycles": 5},
+  {"type": "incubate", "plate": "plate1", "temperature": 95, "time": 3, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "fluorescence", "wavelength": 520}
+]

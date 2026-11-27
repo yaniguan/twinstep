@@ -28,6 +28,7 @@ from twinstep.schema import (
     step_from_dict,
     steps_to_dicts,
 )
+from twinstep.splits import SPLIT_FILTERS, assign_protocol_split
 
 ERROR_TYPES: tuple[str, ...] = (
     "swap_order",
@@ -74,12 +75,20 @@ class TwinRecord:
     original_value: Any
     new_value: Any
     description: str
+    split: str = ""
+
+    def __post_init__(self) -> None:
+        resolved = assign_protocol_split(
+            self.protocol_id, self.split if self.split else None
+        )
+        object.__setattr__(self, "split", resolved)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "task": "error_detection",
             "protocol_id": self.protocol_id,
+            "split": self.split,
             "correct_steps": self.correct_steps,
             "corrupted_steps": self.corrupted_steps,
             "label": self.label,
@@ -102,12 +111,20 @@ class MultiTwinRecord:
     labels: list[str]
     step_indices: list[int]
     descriptions: list[str]
+    split: str = ""
+
+    def __post_init__(self) -> None:
+        resolved = assign_protocol_split(
+            self.protocol_id, self.split if self.split else None
+        )
+        object.__setattr__(self, "split", resolved)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "task": "multi_error_detection",
             "protocol_id": self.protocol_id,
+            "split": self.split,
             "k_errors": len(self.labels),
             "correct_steps": self.correct_steps,
             "corrupted_steps": self.corrupted_steps,
@@ -127,12 +144,20 @@ class OrderingRecord:
     shuffled_steps: list[dict[str, Any]]
     gold_order: list[int]
     constraints: list[list[int]]
+    split: str = ""
+
+    def __post_init__(self) -> None:
+        resolved = assign_protocol_split(
+            self.protocol_id, self.split if self.split else None
+        )
+        object.__setattr__(self, "split", resolved)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "task": "ordering",
             "protocol_id": self.protocol_id,
+            "split": self.split,
             "correct_steps": self.correct_steps,
             "shuffled_steps": self.shuffled_steps,
             "gold_order": self.gold_order,
@@ -362,6 +387,7 @@ def inject_error(
         original_value=original_value,
         new_value=new_value,
         description=description,
+        split=protocol.split or "",
     )
 
 
@@ -633,6 +659,7 @@ def inject_k_errors(
             labels=[item[1] for item in records_meta],
             step_indices=[item[0] for item in records_meta],
             descriptions=[item[2] for item in records_meta],
+            split=protocol.split or "",
         )
 
     raise ValueError(
@@ -653,6 +680,7 @@ def make_clean_record(protocol: Protocol, record_id: str = "") -> TwinRecord:
         original_value=None,
         new_value=None,
         description="No error injected (clean negative).",
+        split=protocol.split or "",
     )
 
 
@@ -770,6 +798,7 @@ def make_ordering_record(
         shuffled_steps=shuffled_dicts,
         gold_order=gold_order,
         constraints=shuffled_constraints,
+        split=protocol.split or "",
     )
 
 
@@ -1117,6 +1146,7 @@ def generate_dataset(
     k_errors: int = 1,
     difficulty: str = "all",
     include_saboteurs: bool = False,
+    split: str = "all",
 ) -> list[dict[str, Any]]:
     """Generate deterministic error-detection twins, clean negatives, and ordering records.
 
@@ -1133,9 +1163,16 @@ def generate_dataset(
         raise ValueError(
             f"unsupported difficulty {difficulty!r}; expected one of {DIFFICULTY_FILTERS}"
         )
+    if split not in SPLIT_FILTERS:
+        raise ValueError(f"unsupported split {split!r}; expected one of {SPLIT_FILTERS}")
     ordering_count = n_twins if n_ordering is None else n_ordering
     if ordering_count < 0:
         raise ValueError("n_ordering must be non-negative")
+
+    if split != "all":
+        protocols = [
+            p for p in protocols if assign_protocol_split(p.protocol_id, p.split) == split
+        ]
 
     rng = random.Random(seed)
     records: list[dict[str, Any]] = []
@@ -1235,6 +1272,7 @@ def generate_dataset(
                     labels=[],
                     step_indices=[],
                     descriptions=["No error injected (clean negative)."],
+                    split=protocol.split or "",
                 ).to_dict()
                 cm_dict["difficulty"] = classify_difficulty(cm_dict)
                 records.append(cm_dict)
@@ -1260,6 +1298,9 @@ def generate_dataset(
                     records.append(o_dict)
 
     if include_saboteurs:
-        records.extend(synthesize_saboteur_records(protocols, seed=seed))
+        sab_recs = synthesize_saboteur_records(protocols, seed=seed)
+        if split != "all":
+            sab_recs = [r for r in sab_recs if r.get("split") == split]
+        records.extend(sab_recs)
 
     return filter_records_by_difficulty(records, difficulty=difficulty)

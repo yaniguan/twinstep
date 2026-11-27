@@ -1,0 +1,18 @@
+[
+  {"type": "transfer", "source": "reservoir:blocking_milk", "dest": "plate1:D1", "volume": 200, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:blocking_milk", "dest": "plate1:D2", "volume": 200, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 90, "time_unit": "min"},
+  {"type": "wash", "plate": "plate1", "volume": 300, "unit": "uL", "cycles": 3},
+  {"type": "transfer", "source": "reservoir:primary_ab1", "dest": "plate1:D1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:primary_ab1", "dest": "plate1:D2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 60, "time_unit": "min"},
+  {"type": "wash", "plate": "plate1", "volume": 300, "unit": "uL", "cycles": 3},
+  {"type": "transfer", "source": "reservoir:secondary_hrp", "dest": "plate1:D1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:secondary_hrp", "dest": "plate1:D2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 30, "time_unit": "min"},
+  {"type": "wash", "plate": "plate1", "volume": 300, "unit": "uL", "cycles": 4},
+  {"type": "transfer", "source": "reservoir:ecl_substrate", "dest": "plate1:D1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:ecl_substrate", "dest": "plate1:D2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 5, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "luminescence"}
+]

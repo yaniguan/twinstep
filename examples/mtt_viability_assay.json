@@ -1,0 +1,11 @@
+[
+  {"type": "transfer", "source": "reservoir:compound_stock", "dest": "plate1:D1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:compound_stock", "dest": "plate1:D2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 720, "time_unit": "min"},
+  {"type": "transfer", "source": "reservoir:mtt_reagent", "dest": "plate1:D1", "volume": 20, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:mtt_reagent", "dest": "plate1:D2", "volume": 20, "unit": "uL"},
+  {"type": "mix", "well": "plate1:D1", "volume": 60, "unit": "uL", "cycles": 4},
+  {"type": "mix", "well": "plate1:D2", "volume": 60, "unit": "uL", "cycles": 4},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 120, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 570}
+]

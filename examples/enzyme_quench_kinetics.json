@@ -1,0 +1,16 @@
+[
+  {"type": "transfer", "source": "reservoir:assay_buffer", "dest": "plate1:H1", "volume": 80, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:assay_buffer", "dest": "plate1:H2", "volume": 80, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:enzyme_stock", "dest": "plate1:H1", "volume": 20, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:enzyme_stock", "dest": "plate1:H2", "volume": 20, "unit": "uL"},
+  {"type": "mix", "well": "plate1:H1", "volume": 60, "unit": "uL", "cycles": 5},
+  {"type": "mix", "well": "plate1:H2", "volume": 60, "unit": "uL", "cycles": 5},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 20, "time_unit": "min"},
+  {"type": "transfer", "source": "plate1:H1", "dest": "plate1:H3", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "plate1:H2", "dest": "plate1:H4", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:quench_acid", "dest": "plate1:H3", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:quench_acid", "dest": "plate1:H4", "volume": 50, "unit": "uL"},
+  {"type": "mix", "well": "plate1:H3", "volume": 50, "unit": "uL", "cycles": 4},
+  {"type": "mix", "well": "plate1:H4", "volume": 50, "unit": "uL", "cycles": 4},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 412}
+]

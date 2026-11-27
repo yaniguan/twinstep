@@ -1,12 +1,24 @@
 """Idea #15: Evolutionary Protocol Saboteur (LeanEvolve-style Red-Teaming).
 
-Inspired by Lean4Agent and LeanEvolve (arXiv:2606.06523), this module runs a
-multi-generation evolutionary mutation loop over multi-step liquid-handling
-protocols (swapping causal barrier steps, injecting reverse-concentration tip
-back-entry, dropping or misplacing >= 80 C seals, and shaving recoverable
-dead-volume reserves) to actively discover stealth protocol corruptions that
-evade weak heuristic gates while failing stateful physical and causal invariants
-formalized in `TwinStepLean`.
+Inspired by LeanEvolve (arXiv:2607.17352), this module runs a multi-generation
+evolutionary mutation loop over multi-step liquid-handling protocols (swapping
+causal barrier steps, injecting reverse-concentration tip back-entry, dropping
+or misplacing >= 80 C seals, and shaving recoverable dead-volume reserves) to
+discover stealth protocol corruptions that evade weak stateless gates (Gen-0 and
+Gen-1).
+
+Rule counts and oracle construction invariant:
+- `TwinStepLean` (`lean/TwinStepLean.lean`) formalizes 5 core rules
+  (`bijective_step_permutation`, `causal_dag_satisfied`,
+  `recoverable_dead_volume_reserve`, `no_reverse_conc_tip_back_entry`, and
+  `high_temp_seal_required`).
+- `check_gen2_stateful_lean_gate` evaluates 11 Python rules in total (those 5
+  core Lean rules plus 6 step-trace hygiene checks for tip mounting, plate
+  overfill, and unsealed pipetting/optical reading).
+- In `evolve_saboteurs`, `is_sabotage` is defined as `not v2.passed` (Gen-2
+  acts as the ground-truth oracle), so `0.0%` Gen-2 evasion holds by
+  construction (`not v2.passed and v2.passed` is identically false); the
+  measured benchmark signal is how often evolved candidates fool Gen-0 and Gen-1.
 """
 
 from __future__ import annotations
@@ -357,7 +369,7 @@ def check_gen2_stateful_lean_gate(
     seed_proto: SeedProtocol,
     candidate_steps: tuple[SaboteurStep, ...],
 ) -> GateVerdict:
-    """Gen-2 stateful physical & causal DAG gate mirroring `TwinStepLean`."""
+    """Gen-2 11-rule stateful Python oracle (5 core `TwinStepLean` rules + 6 trace checks)."""
     violations: list[str] = []
 
     order = [st.step_id for st in candidate_steps]

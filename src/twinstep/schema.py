@@ -12,12 +12,32 @@ from typing import Any, Literal, Union
 
 VolumeUnit = Literal["uL", "mL"]
 TimeUnit = Literal["min", "s"]
+ReadMode = Literal[
+    "absorbance",
+    "fluorescence",
+    "luminescence",
+    "imaging",
+    "turbidity",
+    "od600",
+    "plate_reader",
+]
 
 VALID_VOLUME_UNITS = ("uL", "mL")
 VALID_TIME_UNITS = ("min", "s")
+VALID_READ_MODES: tuple[str, ...] = (
+    "absorbance",
+    "fluorescence",
+    "luminescence",
+    "imaging",
+    "turbidity",
+    "od600",
+    "plate_reader",
+)
+_OPTIONAL_WAVELENGTH_MODES = frozenset({"luminescence", "imaging", "od600", "plate_reader"})
 
 _EXTERNAL_PREFIXES = ("reservoir", "stock", "trough", "waste")
-_BARE_WELL_RE = re.compile(r"^[A-Ha-h](?:[1-9]|1[0-2])$")
+# Supports 96-well and 384-well coordinates (rows A-P, columns 1-24, optional 0-padding 01-09).
+_BARE_WELL_RE = re.compile(r"^([A-Pa-p])(0?[1-9]|1[0-9]|2[0-4])$")
 _INT_RE = re.compile(r"^[+-]?\d(?:_?\d)*$")
 _FLOAT_RE = re.compile(
     r"^[+-]?(?:\d(?:_?\d)*(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?"
@@ -71,8 +91,20 @@ def canonical_plate(plate: str) -> str:
     return plate.strip().lower()
 
 
+def is_bare_well(location: str) -> bool:
+    """Return True when ``location`` is a bare 96- or 384-well coordinate (e.g. A1, A01, P24)."""
+    return _BARE_WELL_RE.match(location.strip()) is not None
+
+
+def _normalize_well_coord(coord: str) -> str:
+    m = _BARE_WELL_RE.match(coord)
+    if m is not None:
+        return f"{m.group(1).upper()}{int(m.group(2))}"
+    return coord.upper()
+
+
 def canonical_location(location: str, default_plate: str = "plate1") -> str:
-    """Normalize well/plate/reservoir strings so 'a1', 'A1', and 'Plate1:A1' match."""
+    """Normalize well/plate/reservoir strings so 'a1', 'A01', and 'Plate1:A1' match."""
     loc = location.strip()
     if ":" in loc:
         prefix, rest = loc.split(":", 1)
@@ -80,9 +112,9 @@ def canonical_location(location: str, default_plate: str = "plate1") -> str:
         rest = rest.strip()
         if prefix_norm in _EXTERNAL_PREFIXES:
             return f"{prefix_norm}:{rest.lower()}"
-        return f"{prefix_norm}:{rest.upper()}"
+        return f"{prefix_norm}:{_normalize_well_coord(rest)}"
     if _BARE_WELL_RE.match(loc):
-        return f"{canonical_plate(default_plate)}:{loc.upper()}"
+        return f"{canonical_plate(default_plate)}:{_normalize_well_coord(loc)}"
     if loc.lower() in _EXTERNAL_PREFIXES:
         return loc.lower()
     return canonical_plate(loc)
@@ -265,14 +297,18 @@ class ReadStep:
 
     def __post_init__(self) -> None:
         clean_plate = _require_nonempty_str(self.plate, "plate")
-        clean_mode = _require_nonempty_str(self.mode, "mode")
+        clean_mode = _require_nonempty_str(self.mode, "mode").lower()
+        if clean_mode not in VALID_READ_MODES:
+            raise ValueError(
+                f"mode must be one of {VALID_READ_MODES}, got {self.mode!r}"
+            )
         object.__setattr__(self, "plate", clean_plate)
         object.__setattr__(self, "mode", clean_mode)
         if self.wavelength is None:
-            if clean_mode.lower() != "luminescence":
+            if clean_mode not in _OPTIONAL_WAVELENGTH_MODES:
                 raise ValueError(
                     f"wavelength is required for read mode {clean_mode!r} "
-                    "(wavelength=None is supported only for 'luminescence')"
+                    f"(wavelength=None is supported only for {sorted(_OPTIONAL_WAVELENGTH_MODES)})"
                 )
         else:
             _require_positive_int(self.wavelength, "wavelength")
@@ -297,6 +333,7 @@ class Protocol:
 
     protocol_id: str
     steps: tuple[Step, ...]
+    split: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -304,6 +341,13 @@ class Protocol:
         )
         if not self.steps:
             raise ValueError("protocol must contain at least one step")
+        if self.split is not None:
+            clean_split = _require_nonempty_str(self.split, "split").lower()
+            if clean_split not in ("train", "val", "test"):
+                raise ValueError(
+                    f"split must be one of ('train', 'val', 'test'), got {self.split!r}"
+                )
+            object.__setattr__(self, "split", clean_split)
 
     def to_dicts(self) -> list[dict[str, Any]]:
         return [step.to_dict() for step in self.steps]
@@ -750,30 +794,36 @@ def load_protocol(path: str | Path) -> Protocol:
     file_path = Path(path)
     raw = _load_raw_document(file_path)
     raw_steps: Any
+    raw_split: str | None = None
     if isinstance(raw, list):
         protocol_id = file_path.stem
         raw_steps = raw
     elif isinstance(raw, dict):
         protocol_id = str(raw.get("protocol_id") or file_path.stem)
         raw_steps = raw.get("steps")
+        if raw.get("split") is not None:
+            raw_split = str(raw["split"])
     else:
         raise ValueError("protocol file must contain a list of steps or a mapping with 'steps'")
 
     steps = tuple(steps_from_list(raw_steps))
-    return Protocol(protocol_id=protocol_id, steps=steps)
+    return Protocol(protocol_id=protocol_id, steps=steps, split=raw_split)
 
 
 __all__ = [
     "IncubateStep",
     "MixStep",
     "Protocol",
+    "ReadMode",
     "ReadStep",
     "Step",
     "TransferStep",
+    "VALID_READ_MODES",
     "WashStep",
     "asdict",
     "canonical_location",
     "canonical_plate",
+    "is_bare_well",
     "load_protocol",
     "step_from_dict",
     "steps_from_list",

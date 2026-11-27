@@ -1,10 +1,11 @@
 # twinstep
 
-`twinstep` is a seeded-error twin generator and evaluator for generic liquid-handling protocol steps. Given valid JSON or YAML protocols (`transfer`, `mix`, `incubate`, `wash`, `read`), it deterministically injects typed protocol errors and generates labeled JSONL records (`raw`, `dpo`, `sft`, or `rlvr`) for protocol reasoning benchmarks:
+`twinstep` is a zero-runtime-dependency (`dependencies = []`) seeded-error twin generator, verifier benchmark, and evaluator for liquid-handling protocol steps. Given valid JSON or YAML protocols (`transfer`, `mix`, `incubate`, `wash`, `read`), it deterministically synthesizes whole-protocol `train` / `val` / `test` splits (`raw`, `dpo`, `mpo`, `gdpo`, `sft`, or `rlvr`) for protocol reasoning and fault-localization evaluation:
 
-1. **Error detection & compound multi-fault debugging**: corrupted step sequences (`--k-errors 1` or `--k-errors k`) paired with their reference steps, `label`/`labels`, `step_index`/`step_indices`, `original_value`, `new_value`, and plain-English descriptions.
-2. **Step ordering**: shuffled step sequences paired with `gold_order` and minimal dependency `constraints` (RAW, WAR, and plate barriers) between steps where order matters.
+1. **Error detection & compound multi-fault debugging**: corrupted step sequences (`--k-errors 1` or `--k-errors k`) paired with ground-truth `label`/`labels`, `step_index`/`step_indices` (`0`-based), `original_value`, `new_value`, and plain-English descriptions (or stripped via `--blind-eval` for reference-blind evaluation).
+2. **Step ordering**: shuffled step sequences paired with `gold_order` and minimal transitive-reduced dependency `constraints` (RAW, WAR, and plate barriers).
 3. **Error repair**: exact canonical and dependency-equivalent scoring for repaired protocols (`repaired_steps`).
+4. **Public wet-lab benchmark adapters & zero-leakage learned localizer**: stdlib-only parsers and SPDX/`eval_only` license guards (`twinstep.open_datasets`) for **WLP**, **BioProBench** (`ERR` & `ORD`), **BioPlanner (`BioProt`)**, and **Opentrons** JSON v6-v8 / Protocol Library, alongside a reference-free graph-feature fault localizer (`twinstep.learned_verifier`) trained strictly on `train`-split protocols.
 
 ## Install
 
@@ -12,160 +13,136 @@
 pip install -e .
 ```
 
-For development (running tests, linters, and full YAML support via PyYAML):
+For development (running tests, linters, and optional YAML support via PyYAML):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-Requires Python 3.11+. The runtime package uses the Python standard library only (`dependencies = []`).
+Requires Python 3.11+. The core runtime package uses the Python standard library only (`dependencies = []`) and runs entirely on CPU.
 
-Part of **[Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab)** ([Project Studio](https://yaniguan.github.io/auto-lab/)) — **Layer `L3 · Post-Training RLVR, Error Twins & GPU Throughput`**.
+Part of **[Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab)** ([Project Studio](https://yaniguan.github.io/auto-lab/)) — **Layer `L3 · Protocol Error Twins, Dependency DAGs & Verifier Benchmarks`**.
 
-## System Profile: Object · Data · Model · Training · History · Unique Properties
+## System Profile: Object · Data · Model · Evaluation · History · Unique Properties
 
 Full code-level architecture, dependency/injector rules, benchmark tables, and history are documented in **[`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md)**:
 
-- **Object**: Deterministic, zero-runtime-dependency generator, reference-free baseline, and evaluator for liquid-handling protocol **error detection**, **compound multi-fault localization**, **error repair**, and **step ordering**.
-- **Data**: Strictly validated 5-step JSON/YAML schema (`transfer`, `mix`, `incubate`, `wash`, `read`) with canonical well normalization (`A1` / `plate1:a1` -> `plate1:A1`), luminescence wavelength-optional support, and 3 MIT-licensed example protocols (`dilution_series.json`, `wash_and_read.json`, `mix_incubate_read.json`).
-- **Model**: Cached transitive-reduced well liquid-flow (RAW + WAR) + plate-barrier dependency DAG (`twinstep.dependencies`), 6 seeded single/multi-fault injectors (`swap_order`, `wrong_volume`, `wrong_unit`, `missing_step`, `wrong_temperature`, `wrong_time`), and a reference-blind rule + cycle-aware `heapq` topological baseline (`twinstep.baseline`).
-- **Training**: Exports `raw`, `dpo`, `sft`, and `rlvr` datasets for [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain) (no internal neural weights; CPU baseline achieves `83.3%` error detection and `100.0%` ordering constraint satisfaction on `--n 5 --seed 0`).
-- **History**: Initial release `8a17ea1` on `main` (`0.1.0`, 29 tests) -> `d598c32` (`review-fixes`, twin deduplication, wash-cycle violation rules, and hand-verified evaluation tests) -> WAR dependencies, multi-cycle topological ordering, `dpo`/`sft`/`rlvr` post-training exports, `error_repair` & `--k-errors` evaluation, and `stepbot`/`labfill` converters (`67` tests).
-- **Unique Properties**: Pure Python 3.11+ stdlib portability (with built-in comment/scientific-notation YAML fallback), partial-order constraint evaluation that respects independent step commutativity, and direct interoperability (`twinstep.interop`) with [`stepbot`](https://github.com/yaniguan/stepbot), [`labfill`](https://github.com/yaniguan/labfill), [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain), [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal), [`lab-verify`](https://github.com/yaniguan/lab-verify), and [`YLM`](https://github.com/yaniguan/YLM) LabLean.
+- **Object**: Deterministic, stdlib-only twin generator, reference-blind rule checker, zero-leakage graph-feature fault localizer, and evaluator for liquid-handling protocol **error detection**, **compound multi-fault localization**, **error repair**, and **step ordering**.
+- **Data**: Validated 5-step JSON/YAML schema (`transfer`, `mix`, `incubate`, `wash`, `read`) supporting 96- and 384-well plates (`A1..P24` and zero-padded `A01..P24`), 7 validated optical/imaging read modes, and **24 MIT-licensed bundled protocols** partitioned whole-protocol into **8 `train`**, **4 `val`**, and **12 held-out `test`** assays, plus adapters for 4 public wet-lab corpora (`wlp`, `bioprobench`, `bioplanner`, `opentrons`).
+- **Model**: Cached transitive-reduced well liquid-flow (RAW + WAR) + plate-barrier dependency DAG (`twinstep.dependencies`), 6 seeded single/multi-fault injectors (`swap_order`, `wrong_volume`, `wrong_unit`, `missing_step`, `wrong_temperature`, `wrong_time`), a per-well dataflow rule checker + DAG topological ordering baseline (`twinstep.baseline`), and a 26-feature relational/bipartite-symmetry multinomial logistic fault localizer (`twinstep.learned_verifier`).
+- **Post-Training Exports & Scope**: Exports `raw`, `dpo`, `mpo`, `gdpo`, `sft`, and `rlvr` JSONL datasets with explicit allowed-label lists and `0`-based `step_index` instructions. `twinstep` contains no GPU training loop and measures no GPU throughput; evaluating whether exported preference pairs improve neural LLM weights requires an external GPU post-training run (e.g. in [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain)).
+- **History**: Initial release `8a17ea1` (`0.1.0`, 29 tests) -> `d598c32` (twin deduplication & wash-cycle rules) -> WAR dependencies, multi-fault/repair evaluation, `stepbot`/`labfill` converters, `TwinStepLean` proofs -> multi-stage well-flow rules, 24-protocol `train`/`val`/`test` split isolation, ProcessBench balanced scoring, 4 public protocol corpora, and zero-leakage learned fault localizer (`96` tests).
+- **Interoperability**: `twinstep.interop` provides bidirectional converters for **two** sibling formats — [`stepbot`](https://github.com/yaniguan/stepbot) YAML/dicts and [`labfill`](https://github.com/yaniguan/labfill) `0.1 uL` batches — while `autolab_wire.py` exchanges `autolab-wire/v1` JSON packets across the Auto-Lab pipeline.
 
 ## Repository Layout
 
 ```text
 twinstep/
-├── autolab_wire.py              # Layer L3 Auto-Lab 15-repo wire node (autolab-wire/v1)
-├── examples/                    # Bundled valid liquid-handling protocols (JSON)
-│   ├── dilution_series.json
-│   ├── mix_incubate_read.json
-│   └── wash_and_read.json
-├── community_extensions/        # Evolutionary protocol saboteur red-teaming (Idea #15)
-├── lean/                        # Lean 4.36.0 causal DAG & stateful saboteur proofs (TwinStepLean)
+├── autolab_wire.py              # Layer L3 Auto-Lab wire node (autolab-wire/v1)
+├── benchmarks/results/          # Reproducible held-out (20-seed) & public-corpus JSON metrics
+│   └── frontier_eval_2026.json
+├── community_extensions/        # Evolutionary protocol saboteur red-teaming (arXiv:2607.17352)
+├── examples/                    # 24 MIT-licensed protocols (8 train / 4 val / 12 held-out test)
+├── lean/                        # Lean 4.36.0 causal DAG & saboteur proofs (TwinStepLean)
+├── scripts/
+│   └── fetch_open_protocols.py  # Downloader, SHA-256 verifier & 4-corpus benchmark runner
 ├── src/twinstep/
 │   ├── __init__.py              # Public API exports
-│   ├── schema.py                # Frozen step dataclasses & JSON + stdlib YAML loaders
-│   ├── dependencies.py          # RAW/WAR liquid-flow + barrier DAG, reduction, violations
+│   ├── schema.py                # Frozen step dataclasses, 96/384-well & stdlib YAML loaders
+│   ├── splits.py                # Whole-protocol train/val/test splits & --blind-eval stripper
+│   ├── dependencies.py          # RAW/WAR well-flow + barrier DAG, reduction & order checks
 │   ├── injectors.py             # 6 seeded single/multi-fault injectors & dataset generator
-│   ├── baseline.py              # Reference-blind rule checker & cycle-aware ordering baseline
-│   ├── evaluate.py              # Error-detection, repair, multi-fault F1, and ordering evaluators
-│   ├── formats.py               # `raw`, `dpo`, `sft`, and `rlvr` prompt-completion serializers
+│   ├── baseline.py              # Reference-blind well-flow checker & DAG topological baseline
+│   ├── learned_verifier.py      # Zero-leakage graph-feature fault localizer (stdlib/sklearn/lgbm)
+│   ├── open_datasets.py         # WLP, BioProBench, BioPlanner & Opentrons parsers + SPDX guards
+│   ├── evaluate.py              # Accuracy, ProcessBench balanced score, repair & split leak checks
+│   ├── formats.py               # `raw`, `dpo`, `mpo`, `gdpo`, `sft`, and `rlvr` serializers
 │   ├── interop.py               # Bidirectional `stepbot` and `labfill` (0.1 uL) converters
 │   └── cli.py                   # `twinstep generate | baseline | eval` CLI
 ├── docs/
 │   └── ARCHITECTURE_AND_HISTORY.md
-└── tests/                       # Schema, dependency, injector, baseline/eval, CLI, wire, and audit tests
+└── tests/                       # 96 unit, CLI, split-leakage, open-dataset & reproducibility tests
 ```
 
-## Quickstart
+## Quickstart & Held-Out Test Split Evaluation
 
-Generate twins and ordering examples from the three included protocols in `examples/` (glob patterns expand cross-platform on POSIX and Windows shells):
+Generate held-out `test`-split twins (`12` unseen protocols, zero overlap with the `8` `train` and `4` `val` protocols) and score the stateless rule baseline:
 
 ```bash
-twinstep generate "examples/*.json" --n 5 --seed 0 -o twins.jsonl
-twinstep baseline twins.jsonl -o preds.jsonl
-twinstep eval twins.jsonl preds.jsonl
+twinstep generate "examples/*.json" --split test --n 5 --seed 0 -o test_twins.jsonl
+twinstep generate "examples/*.json" --split test --n 5 --seed 0 --blind-eval -o test_blind.jsonl
+twinstep baseline test_blind.jsonl -o test_preds.jsonl
+twinstep eval test_twins.jsonl test_preds.jsonl
 ```
 
-Evaluate the built-in rule-based baseline directly, or export preference/RLVR datasets:
+Measured output on the **12 held-out `test` protocols** (`--split test --n 5 --seed 0`, `132` records = `72` error-detection + `60` ordering):
+
+```text
+$ twinstep generate "examples/*.json" --split test --n 5 --seed 0 -o test_twins.jsonl
+Wrote 132 records from 12 protocols to test_twins.jsonl
+
+$ twinstep eval test_twins.jsonl --baseline
+Error detection: 41/72 (56.9%) | balanced: 65.2% | step_index: 29/60 (48.3%)
+  - clean             :  12/12  (100.0%)
+  - missing_step      :   1/9   (11.1%)
+  - swap_order        :   7/10  (70.0%)
+  - wrong_temperature :   5/12  (41.7%)
+  - wrong_time        :   2/10  (20.0%)
+  - wrong_unit        :   9/9   (100.0%)
+  - wrong_volume      :   5/10  (50.0%)
+Ordering: constraints 60/60 (100.0%) | exact 2/60 (3.3%) | pairwise 880/880 (100.0%)
+```
+
+### Multi-Seed Held-Out Test Split & Public Wet-Lab Corpora (`benchmarks/results/frontier_eval_2026.json`)
+
+Reproduce the full 20-seed held-out evaluation (`seeds 0..19`) and public-corpus downloads with:
 
 ```bash
-twinstep eval twins.jsonl --baseline
-twinstep generate "examples/*.json" --n 5 --format dpo -o twins_dpo.jsonl
-twinstep generate "examples/*.json" --n 5 --format rlvr -o twins_rlvr.jsonl
-twinstep generate "examples/*.json" --n 5 --k-errors 2 -o twins_k2.jsonl
+python scripts/fetch_open_protocols.py
 ```
 
-## Example Output
+#### 1. Held-Out `test` Split (`12` unseen protocols; `train` = `8` protocols, `0` protocol overlap)
 
-Re-measured with Python 3.11 (`--n 5 --seed 0`):
+| Verifier (evaluated strictly on `test`) | Seed `0` ED Acc (95% Wilson CI) | Seed `0` Balanced Score | Seed `0` `step_index` | 20-Seed ED `mean +- std` (range) | 20-Seed Balanced `mean +- std` | 20-Seed `step_index` `mean +- std` |
+|---|---|---|---|---|---|---|
+| Stateless Rule Baseline (`twinstep.baseline`) | `41/72` (`56.9%`, `[45.4%, 67.7%]`) | `65.2%` | `29/60` (`48.3%`) | `57.7% +- 4.5%` (`48.6%–63.9%`) | `65.8% +- 5.0%` | `44.2% +- 4.9%` |
+| Graph-Feature Verifier (`learned_stdlib`, trained on `8` `train` protocols) | `58/72` (`80.6%`, `[70.0%, 88.1%]`) | `86.8%` | `44/60` (`73.3%`) | `81.3% +- 4.7%` | `87.3% +- 3.7%` | `70.7% +- 5.6%` |
+| Graph-Feature Verifier (`learned_sklearn`, optional) | `59/72` (`81.9%`, `[71.5%, 89.1%]`) | `87.9%` | `45/60` (`75.0%`) | — | — | — |
+| Graph-Feature Verifier (`learned_lightgbm`, optional) | `52/72` (`72.2%`, `[61.0%, 81.2%]`) | `76.1%` | `41/60` (`68.3%`) | — | — | — |
 
-```text
-$ twinstep generate "examples/*.json" --n 5 --seed 0 -o twins.jsonl
-Wrote 33 records from 3 protocols to twins.jsonl
+#### 2. External Public Wet-Lab Protocol Benchmarks (Zero-Shot Transfer)
 
-$ twinstep baseline twins.jsonl -o preds.jsonl
-Wrote 33 baseline predictions to preds.jsonl
-
-$ twinstep eval twins.jsonl preds.jsonl
-Error detection: 15/18 (83.3%) | step_index: 10/15 (66.7%)
-  - clean             :   3/3   (100.0%)
-  - missing_step      :   2/3   (66.7%)
-  - swap_order        :   4/4   (100.0%)
-  - wrong_time        :   0/1   (0.0%)
-  - wrong_unit        :   3/3   (100.0%)
-  - wrong_volume      :   3/4   (75.0%)
-Ordering: constraints 15/15 (100.0%) | exact 0/15 (0.0%) | pairwise 130/130 (100.0%)
-```
-
-Larger sample covering all six error types (`--n 20 --clean 4 --seed 0`):
-
-```text
-$ twinstep generate "examples/*.json" --n 20 --clean 4 --seed 0 -o twins20.jsonl
-UserWarning: protocol 'mix_incubate_read': no new distinct 'wrong_time' twin after 50 draws; no longer drawing this type
-Wrote 123 records from 3 protocols to twins20.jsonl
-
-$ twinstep eval twins20.jsonl --baseline
-Error detection: 42/63 (66.7%) | step_index: 32/60 (53.3%)
-  - clean             :   3/3   (100.0%)
-  - missing_step      :   4/14  (28.6%)
-  - swap_order        :  14/14  (100.0%)
-  - wrong_temperature :   2/3   (66.7%)
-  - wrong_time        :   1/3   (33.3%)
-  - wrong_unit        :  13/13  (100.0%)
-  - wrong_volume      :   5/13  (38.5%)
-Ordering: constraints 60/60 (100.0%) | exact 0/60 (0.0%) | pairwise 520/520 (100.0%)
-```
-
-Twins within a protocol always have distinct `corrupted_steps`. `mix_incubate_read` has a single 30 min incubation, so `wrong_time` can only produce `30 s`, `300 min`, or `3 min`; once all three are drawn the type is retired with a warning and the remaining slots go to other error types. `--clean` emits one clean negative per protocol for any value above 0, because extra copies would be identical.
+| Public Corpus | License & Policy | Evaluated Slice | Rule ED Acc | Learned (`stdlib`) ED Acc | Ordering `constraints` (Pairwise) |
+|---|---|---|---|---|---|
+| **WLP** (`chaitanya2334/WLP-Dataset`) | `MIT` (`training_allowed=True`) | `6` BRAT `.txt`+`.ann` protocols (`36` ED, `30` Ord) | `19/36` (`52.8%`) | `22/36` (`61.1%`) | `5/30` (`16.7%`, pairwise `61.0%`) |
+| **BioProBench** (`YuyangSunshine/bioprobench`) | `CC-BY-NC-4.0` (`eval_only=True`) | `160` `ERR` + `100` `ORD` test items | `122/160` (`76.2%`, bal `0.0%`) | `120/160` (`75.0%`, bal `10.0%`) | `6/100` (`6.0%`, pairwise `50.6%`) |
+| **BioPlanner / BioProt** (`bioplanner/bioplanner`) | `MIT` (`eval_only=True`) | `6` `protocols.io` JSON protocols (`36` ED, `30` Ord) | `25/36` (`69.4%`) | `25/36` (`69.4%`) | `15/30` (`50.0%`, pairwise `65.9%`) |
+| **Opentrons** (`shared-data` v6-v8 + `Opentrons/Protocols`) | `Apache-2.0` (`training_allowed=True`) | `10` JSON protocols (`60` ED, `50` Ord) | `41/60` (`68.3%`) | `42/60` (`70.0%`) | `40/50` (`80.0%`, pairwise `75.2%`) |
 
 ## How It Works
 
-### Protocol Schema
+### Protocol Schema (`twinstep.schema`)
 
-`twinstep.schema` validates protocols as typed frozen dataclasses:
+- `transfer`: `source`, `dest` (`source != dest`), `volume`, `unit` (`uL` or `mL`); supports 96- and 384-well bare or plate-prefixed coordinates (`A1..P24` and `A01..P24`).
+- `mix`: `well`, `volume`, `unit` (`uL` or `mL`), `cycles`.
+- `incubate`: `temperature` (> `-273.15` C), `time`, `time_unit` (`min` or `s`), optional `plate`.
+- `wash`: consistent `plate` and/or `well`, `volume`, `unit` (`uL` or `mL`), `cycles`.
+- `read`: `plate`, `mode` (validated against `absorbance`, `fluorescence`, `luminescence`, `imaging`, `turbidity`, `od600`, `plate_reader`), `wavelength` (nm; optional for `luminescence`, `imaging`, `od600`, `plate_reader`).
 
-- `transfer`: `source`, `dest` (`source != dest`), `volume`, `unit` (`uL` or `mL`)
-- `mix`: `well`, `volume`, `unit` (`uL` or `mL`), `cycles`
-- `incubate`: `temperature` (> -273.15 C), `time`, `time_unit` (`min` or `s`), optional `plate`
-- `wash`: consistent `plate` and/or `well`, `volume`, `unit` (`uL` or `mL`), `cycles`
-- `read`: `plate`, `mode` (`absorbance`, `fluorescence`, or `luminescence`), `wavelength` (nm; optional when `mode == "luminescence"`)
+### Error Injectors, Prompts, and Balanced Scoring
 
-### Error Injectors and `step_index` Semantics
+- **6 fault injectors** (`twinstep.injectors`): `swap_order`, `wrong_volume`, `wrong_unit`, `missing_step`, `wrong_temperature`, and `wrong_time`.
+- **Self-contained prompts** (`twinstep.formats`): every `error_detection` and `multi_error_detection` prompt explicitly lists all allowed error labels and specifies `step_index is 0-based`.
+- **Label normalization & ProcessBench balanced score** (`twinstep.evaluate`): `evaluate_records` normalizes case, spaces, and hyphens in predicted labels (reporting `normalized_predictions`), checks for `train`/`test` `protocol_id` overlap (`UserWarning`), and reports the ProcessBench harmonic mean `2 * acc_clean * acc_err / (acc_clean + acc_err)` (arXiv:2412.06559) so always-error predictors score `0.0%`.
 
-Each injector in `twinstep.injectors` is seeded with `--seed` and guaranteed to produce a sequence distinct from the original:
+### Rule Checker & Ordering Scope (`twinstep.baseline`)
 
-- `swap_order`: swaps two dependency-ordered steps `(i, j)` (`step_index = i`; `evaluate_records` reports both strict `i` match and relaxed `{i, j}` pair localization).
-- `wrong_volume`: scales a step volume by `10x` or `0.1x` (`step_index` in `0..N-1`).
-- `wrong_unit`: flips `uL` and `mL` while keeping the numeric volume unchanged (`step_index` in `0..N-1`).
-- `missing_step`: drops one step (`step_index` is the 0-based insertion index in `0..len(corrupted_steps)` where the deleted step stood).
-- `wrong_temperature`: shifts an `incubate` temperature (`step_index` in `0..N-1`).
-- `wrong_time`: flips `min` and `s` or scales duration by `10x` / `0.1x` (`step_index` in `0..N-1`).
+- Uses per-well liquid dataflow across `IncubateStep`, `WashStep`, and `ReadStep` barriers so multi-stage assays (e.g. ELISA overnight `960 min` coating + blocking + TMB + acid stop, or `1440 min` 24 h compound incubation + viability reagent + mix) pass with zero false positives (`max_incubate_min = 4320.0` min / `72 h` by default, configurable).
+- Reconstructs step orderings via inferred causal DAG edges + Kahn's topological sort with stable input-position tie-breaking. While this achieves `100.0%` constraint satisfaction on the structured bundled protocols, open-world imported protocols (`WLP`, `BioProBench` `ORD`, `BioPlanner`) show `6.0%–80.0%` constraint satisfaction when ordering cues depend on free-text biological semantics.
 
-### Rule-Based Baseline and Evaluation
+### Evolutionary Saboteur Extension (`community_extensions/saboteur_evolver.py`)
 
-`twinstep.baseline` inspects only the candidate `corrupted_steps` (or `shuffled_steps`) without access to `correct_steps` or `gold_order`:
-
-- Flags dependency violations (`read` before `incubate`/`mix` including across an intervening wash; `incubate` before remaining `mix`/`transfer` within the same cycle; `mix` or `transfer` on a plate after a whole-plate wash without a prior `read`; using a well before filling it; mixing before a later addition without re-mixing).
-- Checks per-step-type volume bounds (`[1, 300] uL` for well `transfer`/`mix`, `[50, 2000] uL` for `wash`), unit mismatches (including `< 5 mL` well transfers and `0.5 uL` washes), temperature bounds (`[4, 95] C`), duration bounds (`[5, 600] s` or `[1, 180] min`), and optical wavelength bounds (`[190, 1100] nm`).
-- Flags uninitialized wells, unmixed multi-reagent wells prior to `transfer`/`incubate`/`wash`/`read`, or a missing `read` step as `missing_step`.
-- Reconstructs step ordering via cycle-partitioned topological sort over well liquid-flow edges and plate-stage barriers.
-
-## 15-Repository Auto-Lab Wire Contract (autolab-wire/v1)
-
-`autolab_wire.py` (`REPO_ID = "twinstep"`, `LAYER = "L3"`) implements `process_packet(packet: dict) -> dict` for the 15-repository [Robot AI Auto-Lab](https://github.com/yaniguan/auto-lab) wire pipeline:
-
-- **Upstream links**: Consumes protocol span parameters (`parsed_spans`: `volume_ul`, `temp_c`, `duration_min`) alongside upstream pre-execution and post-run state from [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal) (`L4`), [`stepbot`](https://github.com/yaniguan/stepbot) (`L1`), and [`lab-attrib`](https://github.com/yaniguan/lab-attrib) (`L4` causal blame & SHA-256 certified ledger). Halted upstream packets (`halted == True`) pass through unchanged.
-- **Causal DAG & twin synthesis**: Constructs a validated `twinstep` `Protocol` (`transfer -> mix -> incubate -> read`), extracts transitive-reduced dependency edges via `twinstep.dependencies.find_dependencies`, enforces the Lean `violated_dag_edge_rejected` invariant on any `candidate_step_order` (halting with `halt_reason = "L3_TWINSTEP_DAG_BLOCK"` if violated), and synthesizes seeded corrupted twins via `twinstep.injectors.generate_dataset`.
-- **Downstream handoff**: Emits `out["error_twins"]` (`step_count`, `dag_edges`, `corrupted_twin_count`, `fault_types`, and `token_lengths` in `48..240`) directly to downstream [`labfill`](https://github.com/yaniguan/labfill) (`L3` BF16 sequence bin packing) and [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain) (`L3` anti-hack RLVR).
-
-## Limits
-
-- **Ordering metrics**: many step orders are valid, so `exact` (same order as the original file) is strict and low for the baseline. `constraints` and `pairwise` count only the dependency pairs that must hold.
-- **Stateless single-protocol checks**: the rule-based baseline cannot detect subtle in-range errors (such as `100 uL -> 10 uL`, `37 C -> 62 C`, `30 min -> 3 min`, or dropping an independent buffer dispense) without a reference specification.
-- **Multi-cycle ordering without well-flow cues**: `predict_order` partitions multi-barrier protocols into cycle segments and resolves causal well-flow chains across cycles, but distinct external reagent additions targeting the same well in different cycles cannot be ordered relative to each other from unordered `shuffled_steps` alone.
+- Inspired by **LeanEvolve** (`arXiv:2607.17352`), `saboteur_evolver.py` evolves candidate mutations against weak stateless gates (`Gen-0` scalar bounds and `Gen-1` op-presence bitmasks) using an `11`-rule stateful Python oracle (`check_gen2_stateful_lean_gate`) that extends the `5` core rules mechanized in `lean/TwinStepLean.lean` (`no user axioms`). Because saboteurs are defined as candidates failing `Gen-2`, `0.0%` `Gen-2` evasion holds by construction; the empirical metric is `Gen-0`/`Gen-1` evasion growth across generations.
 
 ## License
 

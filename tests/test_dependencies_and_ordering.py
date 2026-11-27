@@ -305,3 +305,87 @@ def test_issue_30_case_plates_bare_well_binding_quench_war_and_cross_plate_cycle
             predict_order(rec_gi.shuffled_steps),
             [(c[0], c[1]) for c in rec_gi.constraints],
         )
+
+
+def test_issue_36_multistage_assays_zero_padded_and_384_wells() -> None:
+    fixtures = [
+        Protocol(
+            "elisa_tmb_stop_read",
+            (
+                TransferStep("reservoir:tmb", "plate1:A1", 100, "uL"),
+                IncubateStep(plate="plate1", temperature=25, time=15, time_unit="min"),
+                TransferStep("reservoir:stop_solution", "plate1:A1", 50, "uL"),
+                ReadStep(plate="plate1", mode="absorbance", wavelength=450),
+            ),
+        ),
+        Protocol(
+            "elisa_coat_overnight_block_tmb_read",
+            (
+                TransferStep("reservoir:coat", "plate1:A1", 100, "uL"),
+                IncubateStep(plate="plate1", temperature=4, time=960, time_unit="min"),
+                WashStep(plate="plate1", volume=300, cycles=3, unit="uL"),
+                TransferStep("reservoir:block", "plate1:A1", 200, "uL"),
+                IncubateStep(plate="plate1", temperature=25, time=60, time_unit="min"),
+                WashStep(plate="plate1", volume=300, cycles=3, unit="uL"),
+                TransferStep("reservoir:tmb", "plate1:A1", 100, "uL"),
+                IncubateStep(plate="plate1", temperature=25, time=15, time_unit="min"),
+                ReadStep(plate="plate1", mode="absorbance", wavelength=450),
+            ),
+        ),
+        Protocol(
+            "cell_viability_24h_compound_read",
+            (
+                TransferStep("reservoir:compound", "plate1:A1", 100, "uL"),
+                IncubateStep(plate="plate1", temperature=37, time=1440, time_unit="min"),
+                TransferStep("reservoir:viability_reagent", "plate1:A1", 100, "uL"),
+                MixStep(well="plate1:A1", volume=100, cycles=5, unit="uL"),
+                IncubateStep(plate="plate1", temperature=25, time=10, time_unit="min"),
+                ReadStep(plate="plate1", mode="luminescence", wavelength=None),
+            ),
+        ),
+        Protocol(
+            "zero_padded_96_wells",
+            (
+                TransferStep("reservoir:buffer", "A01", 100, "uL"),
+                TransferStep("reservoir:buffer", "A02", 100, "uL"),
+                TransferStep("reservoir:sample", "A01", 100, "uL"),
+                MixStep(well="A01", volume=100, cycles=5, unit="uL"),
+                TransferStep("A01", "A02", 100, "uL"),
+                MixStep(well="A02", volume=100, cycles=5, unit="uL"),
+                ReadStep(plate="plate1", mode="absorbance", wavelength=450),
+            ),
+        ),
+        Protocol(
+            "plate_384_wells_p24_o24",
+            (
+                TransferStep("reservoir:buffer", "P24", 40, "uL"),
+                TransferStep("reservoir:buffer", "O24", 40, "uL"),
+                TransferStep("reservoir:compound", "P24", 40, "uL"),
+                MixStep(well="P24", volume=40, cycles=5, unit="uL"),
+                TransferStep("P24", "O24", 40, "uL"),
+                MixStep(well="O24", volume=40, cycles=5, unit="uL"),
+                ReadStep(plate="plate1", mode="fluorescence", wavelength=520),
+            ),
+        ),
+    ]
+
+    for proto in fixtures:
+        deps = find_dependencies(proto.steps)
+        assert len(deps) > 0, f"{proto.protocol_id} had empty dependency edges"
+        # Ensure well-level edges exist for zero-padded and 384-well fixtures (not only ReadStep)
+        non_read_deps = [
+            (u, v) for u, v in deps if not isinstance(proto.steps[v], ReadStep)
+        ]
+        assert len(non_read_deps) > 0, f"{proto.protocol_id} lacked well-flow edges"
+        assert find_order_violations(proto.steps) == []
+        pred_err = predict_error(proto.steps)
+        assert pred_err["label"] == "clean", f"{proto.protocol_id}: {pred_err}"
+
+        rng = random.Random(36)
+        met = 0
+        for s_idx in range(20):
+            rec = make_ordering_record(proto, rng, record_id=f"{proto.protocol_id}:{s_idx}")
+            pred_ord = predict_order(rec.shuffled_steps)
+            if check_constraints(pred_ord, [(c[0], c[1]) for c in rec.constraints]):
+                met += 1
+        assert met == 20, f"{proto.protocol_id} met {met}/20 orderings"

@@ -1,0 +1,16 @@
+[
+  {"type": "transfer", "source": "reservoir:media_diluent", "dest": "plate1:P21", "volume": 30, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:media_diluent", "dest": "plate1:P22", "volume": 30, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:media_diluent", "dest": "plate1:P23", "volume": 30, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:media_diluent", "dest": "plate1:P24", "volume": 30, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:drug_compound", "dest": "plate1:P21", "volume": 30, "unit": "uL"},
+  {"type": "mix", "well": "plate1:P21", "volume": 30, "unit": "uL", "cycles": 6},
+  {"type": "transfer", "source": "plate1:P21", "dest": "plate1:P22", "volume": 30, "unit": "uL"},
+  {"type": "mix", "well": "plate1:P22", "volume": 30, "unit": "uL", "cycles": 6},
+  {"type": "transfer", "source": "plate1:P22", "dest": "plate1:P23", "volume": 30, "unit": "uL"},
+  {"type": "mix", "well": "plate1:P23", "volume": 30, "unit": "uL", "cycles": 6},
+  {"type": "transfer", "source": "plate1:P23", "dest": "plate1:P24", "volume": 30, "unit": "uL"},
+  {"type": "mix", "well": "plate1:P24", "volume": 30, "unit": "uL", "cycles": 6},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 120, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "luminescence"}
+]

@@ -1,0 +1,12 @@
+[
+  {"type": "transfer", "source": "reservoir:pbs_diluent", "dest": "plate1:A1", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:bsa_standard", "dest": "plate1:A1", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:pbs_diluent", "dest": "plate1:A2", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:protein_sample", "dest": "plate1:A2", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:bradford_coomassie", "dest": "plate1:A1", "volume": 200, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:bradford_coomassie", "dest": "plate1:A2", "volume": 200, "unit": "uL"},
+  {"type": "mix", "well": "plate1:A1", "volume": 100, "unit": "uL", "cycles": 5},
+  {"type": "mix", "well": "plate1:A2", "volume": 100, "unit": "uL", "cycles": 5},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 10, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 595}
+]

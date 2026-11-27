@@ -1,0 +1,11 @@
+[
+  {"type": "transfer", "source": "reservoir:cell_seed", "dest": "plate1:M12", "volume": 30, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:cell_seed", "dest": "plate1:N12", "volume": 30, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 1440, "time_unit": "min"},
+  {"type": "wash", "plate": "plate1", "volume": 80, "unit": "uL", "cycles": 2},
+  {"type": "transfer", "source": "reservoir:fluor_stain", "dest": "plate1:M12", "volume": 15, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:fluor_stain", "dest": "plate1:N12", "volume": 15, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 20, "time_unit": "min"},
+  {"type": "wash", "plate": "plate1", "volume": 80, "unit": "uL", "cycles": 2},
+  {"type": "read", "plate": "plate1", "mode": "imaging"}
+]

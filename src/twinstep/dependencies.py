@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import lru_cache
-import re
 
 from twinstep.schema import (
     IncubateStep,
@@ -15,10 +14,10 @@ from twinstep.schema import (
     WashStep,
     canonical_location,
     canonical_plate,
+    is_bare_well,
 )
 
 _EXTERNAL_PREFIXES = ("reservoir", "stock", "trough", "waste")
-_BARE_WELL_RE = re.compile(r"^[A-Ha-h](?:[1-9]|1[0-2])$")
 
 
 def _explicit_well_plate(location: str) -> str | None:
@@ -69,11 +68,11 @@ def is_well_ref(location: str) -> bool:
     prefix = loc.split(":", 1)[0].strip().lower()
     if prefix in _EXTERNAL_PREFIXES:
         return False
-    return ":" in loc or bool(_BARE_WELL_RE.match(loc))
+    return ":" in loc or is_bare_well(loc)
 
 
 def canonical_well(location: str, default_plate: str = "plate1") -> str:
-    """Canonicalize a well or container location ('a1' -> '<default_plate>:A1')."""
+    """Canonicalize a well or container location ('a01' -> '<default_plate>:A1')."""
     return canonical_location(location, default_plate=default_plate)
 
 
@@ -85,7 +84,7 @@ def plate_of(location: str, default_plate: str = "plate1") -> str | None:
         if prefix in _EXTERNAL_PREFIXES:
             return None
         return prefix
-    if _BARE_WELL_RE.match(loc):
+    if is_bare_well(loc):
         return canonical_plate(default_plate)
     if loc.lower() in _EXTERNAL_PREFIXES:
         return None
@@ -345,7 +344,8 @@ def find_order_violations(
                 )
                 break
 
-    # 2b. Mix of well W followed by a refill transfer into W without a subsequent mix of W.
+    # 2b. Mix of well W followed by a refill transfer into W within the same stage
+    # without a subsequent mix of W.
     for i, step_i in enumerate(steps):
         if not (isinstance(step_i, MixStep) and is_well_ref(step_i.well)):
             continue
@@ -355,10 +355,27 @@ def find_order_violations(
         remixed = False
         for j in range(i + 1, n):
             step_j = steps[j]
-            if isinstance(step_j, WashStep) and (
-                (step_j.well is not None and canonical_well(step_j.well, default_plate) == well)
-                or (step_j.plate is not None and canonical_plate(step_j.plate) == w_plate)
-            ):
+            is_stage_barrier = (
+                (
+                    isinstance(step_j, WashStep)
+                    and (
+                        (
+                            step_j.well is not None
+                            and canonical_well(step_j.well, default_plate) == well
+                        )
+                        or (
+                            step_j.plate is not None
+                            and canonical_plate(step_j.plate) == w_plate
+                        )
+                    )
+                )
+                or (
+                    isinstance(step_j, IncubateStep)
+                    and (step_j.plate is None or canonical_plate(step_j.plate) == w_plate)
+                )
+                or (isinstance(step_j, ReadStep) and canonical_plate(step_j.plate) == w_plate)
+            )
+            if is_stage_barrier:
                 break
             if (
                 isinstance(step_j, TransferStep)
@@ -438,53 +455,128 @@ def find_order_violations(
                 )
                 break
 
-    # 3b. Mix or transfer on plate P after a whole-plate wash of P with no read in between.
-    # If P was already read before the wash, a transfer starts a new cycle (see rule 3).
+    # 3b. Well-flow wash check: flag (a) mixing a pre-wash well after a whole-plate wash
+    # without a post-wash refill, or (b) transferring onto a plate whose pre-wash well writes
+    # were never incubated or read prior to the wash (prematurely swapped wash).
     for i, step_i in enumerate(steps):
         if not (isinstance(step_i, WashStep) and step_i.plate is not None and step_i.well is None):
             continue
         plate = canonical_plate(step_i.plate)
-        read_before = any(
-            isinstance(s_k, ReadStep) and canonical_plate(s_k.plate) == plate
-            for s_k in steps[:i]
-        )
+        pre_wash_wells: set[str] = set()
+        unconsumed_wells: set[str] = set()
+        for k in range(i):
+            s_k = steps[k]
+            if isinstance(s_k, TransferStep) and is_well_ref(s_k.dest):
+                if plate_of(s_k.dest, default_plate) == plate:
+                    w_k = canonical_well(s_k.dest, default_plate)
+                    pre_wash_wells.add(w_k)
+                    unconsumed_wells.add(w_k)
+            elif isinstance(s_k, ReadStep) and canonical_plate(s_k.plate) == plate:
+                unconsumed_wells.clear()
+            elif isinstance(s_k, IncubateStep) and (
+                s_k.plate is None or canonical_plate(s_k.plate) == plate
+            ):
+                unconsumed_wells.clear()
+            elif (
+                isinstance(s_k, WashStep)
+                and s_k.plate is not None
+                and s_k.well is None
+                and canonical_plate(s_k.plate) == plate
+            ):
+                unconsumed_wells.clear()
+
+        post_wash_filled: set[str] = set()
         for j in range(i + 1, n):
             step_j = steps[j]
             if isinstance(step_j, ReadStep) and canonical_plate(step_j.plate) == plate:
                 break
+            if isinstance(step_j, IncubateStep) and (
+                step_j.plate is None or canonical_plate(step_j.plate) == plate
+            ):
+                break
             if isinstance(step_j, TransferStep) and plate in step_plates(step_j, default_plate):
-                if not read_before:
+                if unconsumed_wells:
                     violations.append(
                         (i, j, f"step {i} washes {plate} before step {j} transfers on it")
                     )
-                break
-            if isinstance(step_j, MixStep) and plate in step_plates(step_j, default_plate):
-                violations.append(
-                    (i, j, f"step {i} washes {plate} before step {j} mixes it")
-                )
-                break
+                    break
+                if is_well_ref(step_j.dest) and plate_of(step_j.dest, default_plate) == plate:
+                    post_wash_filled.add(canonical_well(step_j.dest, default_plate))
+            elif (
+                isinstance(step_j, MixStep)
+                and is_well_ref(step_j.well)
+                and plate_of(step_j.well, default_plate) == plate
+            ):
+                mw = canonical_well(step_j.well, default_plate)
+                if mw in pre_wash_wells and mw not in post_wash_filled:
+                    violations.append(
+                        (i, j, f"step {i} washes {plate} before step {j} mixes it")
+                    )
+                    break
 
-    # 4. Incubate before remaining unseparated liquid handling on its target plate(s).
+    # 4. Well-flow incubate check: allow post-incubation reagent additions (e.g. stop solution
+    # or multi-stage viability reagents + mix) on already-initialized wells, while flagging
+    # empty-plate incubations, unrefilled post-incubation mixes, or unincubated parallel wells.
     for i, step_i in enumerate(steps):
         if not isinstance(step_i, IncubateStep):
             continue
         target_plates = step_plates(step_i, default_plate)
-        has_prior = any(
-            isinstance(steps[k], (TransferStep, MixStep, WashStep))
-            and (not target_plates or bool(target_plates & step_plates(steps[k], default_plate)))
-            for k in range(i)
-        )
+        wells_before_inc: set[str] = set()
+        has_prior = False
+        for k in range(i):
+            s_k = steps[k]
+            sk_plates = step_plates(s_k, default_plate)
+            overlaps_k = not target_plates or bool(target_plates & sk_plates)
+            if isinstance(s_k, (TransferStep, MixStep, WashStep)) and overlaps_k:
+                has_prior = True
+            if isinstance(s_k, TransferStep) and is_well_ref(s_k.dest):
+                dp = plate_of(s_k.dest, default_plate)
+                if not target_plates or (dp is not None and dp in target_plates):
+                    wells_before_inc.add(canonical_well(s_k.dest, default_plate))
+
+        post_inc_filled: set[str] = set()
         for j in range(i + 1, n):
             step_j = steps[j]
             sj_plates = step_plates(step_j, default_plate)
-            touches_target = not target_plates or bool(target_plates & sj_plates)
-            if has_prior and touches_target and isinstance(step_j, (ReadStep, WashStep)):
-                # A ReadStep or WashStep after prior prep closes the incubation cycle.
+            touches_target = (not target_plates and bool(sj_plates)) or bool(
+                target_plates & sj_plates
+            )
+            if has_prior and touches_target and isinstance(
+                step_j, (ReadStep, WashStep, IncubateStep)
+            ):
                 break
-            if isinstance(step_j, (TransferStep, MixStep)) and touches_target:
-                violations.append(
-                    (i, j, f"step {i} incubates before liquid handling step {j}")
-                )
-                break
+            if isinstance(step_j, TransferStep) and touches_target:
+                if not wells_before_inc and not has_prior:
+                    violations.append(
+                        (i, j, f"step {i} incubates before liquid handling step {j}")
+                    )
+                    break
+                if is_well_ref(step_j.dest):
+                    dp = plate_of(step_j.dest, default_plate)
+                    if not target_plates or (dp is not None and dp in target_plates):
+                        dst_w = canonical_well(step_j.dest, default_plate)
+                        if (
+                            not is_well_ref(step_j.source)
+                            and dst_w not in wells_before_inc
+                            and dst_w not in post_inc_filled
+                        ):
+                            has_later_inc = any(
+                                isinstance(s_m, IncubateStep)
+                                and (s_m.plate is None or canonical_plate(s_m.plate) == dp)
+                                for s_m in steps[j + 1 :]
+                            )
+                            if not has_later_inc:
+                                violations.append(
+                                    (i, j, f"step {i} incubates before liquid handling step {j}")
+                                )
+                                break
+                        post_inc_filled.add(dst_w)
+            elif isinstance(step_j, MixStep) and touches_target and is_well_ref(step_j.well):
+                mw = canonical_well(step_j.well, default_plate)
+                if mw not in post_inc_filled:
+                    violations.append(
+                        (i, j, f"step {i} incubates before liquid handling step {j}")
+                    )
+                    break
 
     return violations

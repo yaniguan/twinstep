@@ -1,0 +1,14 @@
+[
+  {"type": "transfer", "source": "reservoir:coating_antigen", "dest": "plate1:E1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:coating_antigen", "dest": "plate1:E2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 4, "time": 720, "time_unit": "min"},
+  {"type": "wash", "plate": "plate1", "volume": 300, "unit": "uL", "cycles": 3},
+  {"type": "transfer", "source": "reservoir:hrp_conjugate", "dest": "plate1:E1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:hrp_conjugate", "dest": "plate1:E2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 45, "time_unit": "min"},
+  {"type": "wash", "plate": "plate1", "volume": 300, "unit": "uL", "cycles": 3},
+  {"type": "transfer", "source": "reservoir:tmb_substrate", "dest": "plate1:E1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:tmb_substrate", "dest": "plate1:E2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 15, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450}
+]

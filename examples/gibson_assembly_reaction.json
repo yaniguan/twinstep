@@ -1,0 +1,13 @@
+[
+  {"type": "transfer", "source": "reservoir:dna_insert", "dest": "plate1:C1", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:dna_insert", "dest": "plate1:C2", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:gibson_mastermix", "dest": "plate1:C1", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:gibson_mastermix", "dest": "plate1:C2", "volume": 10, "unit": "uL"},
+  {"type": "mix", "well": "plate1:C1", "volume": 12, "unit": "uL", "cycles": 5},
+  {"type": "mix", "well": "plate1:C2", "volume": 12, "unit": "uL", "cycles": 5},
+  {"type": "incubate", "plate": "plate1", "temperature": 50, "time": 60, "time_unit": "min"},
+  {"type": "transfer", "source": "reservoir:picogreen_dye", "dest": "plate1:C1", "volume": 20, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:picogreen_dye", "dest": "plate1:C2", "volume": 20, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 5, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "fluorescence", "wavelength": 525}
+]
