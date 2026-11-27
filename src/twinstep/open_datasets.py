@@ -533,7 +533,7 @@ def parse_opentrons_json_protocol(
             continue
         ctype = str(cmd.get("commandType") or "")
         raw_params = cmd.get("params")
-        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+        params = raw_params if isinstance(raw_params, dict) else {}
 
         if ctype == "aspirate":
             lw_id = str(params.get("labwareId") or "source")
