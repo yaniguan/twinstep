@@ -1,0 +1,13 @@
+[
+  {"type": "transfer", "source": "reservoir:rna_template", "dest": "plate1:A01", "volume": 5, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:rna_template", "dest": "plate1:A02", "volume": 5, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:rt_enzyme", "dest": "plate1:A01", "volume": 5, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:rt_enzyme", "dest": "plate1:A02", "volume": 5, "unit": "uL"},
+  {"type": "mix", "well": "plate1:A01", "volume": 8, "unit": "uL", "cycles": 5},
+  {"type": "mix", "well": "plate1:A02", "volume": 8, "unit": "uL", "cycles": 5},
+  {"type": "incubate", "plate": "plate1", "temperature": 42, "time": 30, "time_unit": "min"},
+  {"type": "transfer", "source": "reservoir:sybr_probe", "dest": "plate1:A01", "volume": 10, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:sybr_probe", "dest": "plate1:A02", "volume": 10, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 95, "time": 5, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "fluorescence", "wavelength": 520}
+]

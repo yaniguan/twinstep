@@ -55,6 +55,7 @@ def test_step_round_trip_all_types() -> None:
         {"type": "wash", "well": "reservoir:water", "volume": 200, "cycles": 2},
         {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 0},
         {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": None},
+        {"type": "read", "plate": "plate1", "mode": "banana", "wavelength": 450},
         {"type": "unknown", "foo": 1},
     ],
 )
@@ -65,7 +66,7 @@ def test_invalid_step_rejected(bad_step: dict[str, Any]) -> None:
 
 def test_load_example_protocols() -> None:
     files = sorted(EXAMPLES_DIR.glob("*.json"))
-    assert len(files) == 3
+    assert len(files) == 24
     for path in files:
         proto = load_protocol(path)
         assert isinstance(proto, Protocol)

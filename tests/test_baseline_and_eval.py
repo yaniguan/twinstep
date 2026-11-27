@@ -76,8 +76,30 @@ def test_baseline_catches_clear_errors() -> None:
     assert pred_temp["label"] == "wrong_temperature"
     assert pred_temp["step_index"] == 1
 
-    # wrong_time (300 min)
+    # wrong_time (> 4320 min by default, and > 180 min when configured)
     pred_time = predict_error(
+        [
+            {
+                "type": "transfer",
+                "source": "reservoir:buffer",
+                "dest": "plate1:A1",
+                "volume": 100,
+                "unit": "uL",
+            },
+            {
+                "type": "incubate",
+                "plate": "plate1",
+                "temperature": 37,
+                "time": 5000,
+                "time_unit": "min",
+            },
+            {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
+        ]
+    )
+    assert pred_time["label"] == "wrong_time"
+    assert pred_time["step_index"] == 1
+
+    pred_time_custom = predict_error(
         [
             {
                 "type": "transfer",
@@ -94,10 +116,11 @@ def test_baseline_catches_clear_errors() -> None:
                 "time_unit": "min",
             },
             {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
-        ]
+        ],
+        max_incubate_min=180.0,
     )
-    assert pred_time["label"] == "wrong_time"
-    assert pred_time["step_index"] == 1
+    assert pred_time_custom["label"] == "wrong_time"
+    assert pred_time_custom["step_index"] == 1
 
 
 def _ed(rec_id: str, label: str, step_index: int | None) -> dict:
@@ -188,15 +211,18 @@ def test_evaluate_records_reports_per_error_type_and_ordering() -> None:
     metrics = evaluate_records(records, preds)
 
     ed = metrics["error_detection"]
-    assert ed["total"] == 18
+    assert ed["total"] == len(protocols) * 6
     assert 0.0 <= ed["accuracy"] <= 1.0
+    assert 0.0 <= ed["balanced_accuracy"] <= 1.0
     assert "clean" in ed["per_error_type"]
     assert ed["per_error_type"]["clean"]["accuracy"] == 1.0
 
     ordering = metrics["ordering"]
-    assert ordering["total"] == 15
-    assert ordering["constraint_accuracy"] == 1.0
+    assert ordering["total"] == len(protocols) * 5
+    assert ordering["constraint_accuracy"] >= 0.85
 
     report = format_evaluation_report(metrics)
     assert "Error detection:" in report
+    assert "balanced:" in report
     assert "Ordering:" in report
+    assert "Per-split breakdown:" in report

@@ -1,0 +1,11 @@
+[
+  {"type": "transfer", "source": "reservoir:lb_media", "dest": "plate1:E01", "volume": 150, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:lb_media", "dest": "plate1:E02", "volume": 150, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:cell_seed", "dest": "plate1:E01", "volume": 20, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:cell_seed", "dest": "plate1:E02", "volume": 20, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:drug_inhibitor", "dest": "plate1:E02", "volume": 10, "unit": "uL"},
+  {"type": "mix", "well": "plate1:E01", "volume": 80, "unit": "uL", "cycles": 4},
+  {"type": "mix", "well": "plate1:E02", "volume": 80, "unit": "uL", "cycles": 4},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 960, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "od600", "wavelength": 600}
+]

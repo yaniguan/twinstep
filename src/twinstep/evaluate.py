@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+import re
 from typing import Any
+import warnings
 
 from twinstep.dependencies import check_constraints, find_dependencies
 from twinstep.formats import parse_completion_payload
 from twinstep.schema import Step, steps_from_list
+from twinstep.splits import VALID_SPLITS, detect_protocol_split_overlaps
 
 _SUPPORTED_TASKS = {
     "error_detection",
@@ -18,10 +21,21 @@ _SUPPORTED_TASKS = {
 }
 
 
+def normalize_error_label(raw_label: Any) -> tuple[str | None, bool]:
+    """Canonicalize label casing, whitespace, and hyphens, returning ``(label, changed)``."""
+    if raw_label is None or not isinstance(raw_label, str):
+        return None, False
+    cleaned = re.sub(r"[\s\-]+", "_", raw_label.strip().lower())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    if not cleaned:
+        return "", cleaned != raw_label
+    return cleaned, cleaned != raw_label
+
+
 def _normalize_gold(raw_gold: dict[str, Any]) -> dict[str, Any]:
     if "ground_truth" in raw_gold and isinstance(raw_gold["ground_truth"], dict):
         merged = dict(raw_gold["ground_truth"])
-        for key in ("id", "protocol_id", "task", "corrupted_steps", "shuffled_steps"):
+        for key in ("id", "protocol_id", "split", "task", "corrupted_steps", "shuffled_steps"):
             if key in raw_gold and raw_gold[key] is not None:
                 merged.setdefault(key, raw_gold[key])
         return merged
@@ -140,15 +154,16 @@ def _safe_f1(tp: int, pred_n: int, gold_n: int) -> tuple[float, float, float]:
     return prec, rec, f1
 
 
-def evaluate_records(
-    gold_records: Sequence[dict[str, Any]],
-    pred_records: Sequence[dict[str, Any]],
+def _compute_core_metrics(
+    normalized_pairs: Sequence[tuple[dict[str, Any], dict[str, Any] | None]],
 ) -> dict[str, Any]:
-    """Compute error-detection, step-ordering, error-repair, and multi-fault metrics."""
-    matched = _match_predictions(gold_records, pred_records)
-
     ed_total = 0
     ed_correct = 0
+    clean_total = 0
+    clean_correct = 0
+    err_total = 0
+    err_correct = 0
+    normalized_preds = 0
     step_idx_total = 0
     step_idx_correct = 0
     step_idx_relaxed_correct = 0
@@ -173,9 +188,11 @@ def evaluate_records(
     multi_pair_pred = 0
     multi_pair_gold = 0
 
-    for raw_gold, raw_pred in matched:
-        gold = _normalize_gold(raw_gold)
-        pred = _normalize_pred(raw_pred)
+    protocol_ids: set[str] = set()
+
+    for gold, pred in normalized_pairs:
+        if gold.get("protocol_id") is not None:
+            protocol_ids.add(str(gold["protocol_id"]))
         task = gold.get("task", "error_detection")
         if task not in _SUPPORTED_TASKS:
             raise ValueError(
@@ -185,12 +202,26 @@ def evaluate_records(
 
         if task == "error_detection":
             ed_total += 1
-            gold_label = str(gold["label"])
+            gold_label_norm, _ = normalize_error_label(str(gold["label"]))
+            gold_label = gold_label_norm if gold_label_norm is not None else str(gold["label"])
             per_type_counts[gold_label][1] += 1
-            pred_label = pred.get("label") if pred is not None else None
+            if gold_label == "clean":
+                clean_total += 1
+            else:
+                err_total += 1
+
+            raw_pred_label = pred.get("label") if pred is not None else None
+            pred_label, was_norm = normalize_error_label(raw_pred_label)
+            if was_norm:
+                normalized_preds += 1
+
             if pred_label == gold_label:
                 ed_correct += 1
                 per_type_counts[gold_label][0] += 1
+                if gold_label == "clean":
+                    clean_correct += 1
+                else:
+                    err_correct += 1
 
             gold_idx = gold.get("step_index")
             if gold_idx is not None:
@@ -234,15 +265,26 @@ def evaluate_records(
 
         elif task == "multi_error_detection":
             multi_total += 1
-            gold_labels = [str(x) for x in gold.get("labels", [])]
+            gold_labels = [
+                normalize_error_label(str(x))[0] or str(x) for x in gold.get("labels", [])
+            ]
             gold_indices = [int(x) for x in gold.get("step_indices", [])]
+            rec_was_norm = False
             if pred is not None:
                 if isinstance(pred.get("labels"), list):
-                    pred_labels = [str(x) for x in pred["labels"]]
-                elif pred.get("label") is not None and pred.get("label") != "clean":
-                    pred_labels = [str(pred["label"])]
+                    pred_labels = []
+                    for item_lbl in pred["labels"]:
+                        nlbl, wnorm = normalize_error_label(str(item_lbl))
+                        pred_labels.append(nlbl if nlbl is not None else str(item_lbl))
+                        rec_was_norm = rec_was_norm or wnorm
+                elif pred.get("label") is not None:
+                    nlbl, wnorm = normalize_error_label(pred.get("label"))
+                    rec_was_norm = rec_was_norm or wnorm
+                    pred_labels = [nlbl] if (nlbl is not None and nlbl != "clean") else []
                 else:
                     pred_labels = []
+                if rec_was_norm:
+                    normalized_preds += 1
                 if isinstance(pred.get("step_indices"), list):
                     pred_indices = [
                         int(x)
@@ -305,14 +347,31 @@ def evaluate_records(
         for err_type, counts in sorted(per_type_counts.items())
     }
 
+    acc_clean = (clean_correct / clean_total) if clean_total > 0 else 0.0
+    acc_err = (err_correct / err_total) if err_total > 0 else 0.0
+    balanced_acc = (
+        (2.0 * acc_clean * acc_err / (acc_clean + acc_err))
+        if (clean_total > 0 and err_total > 0 and (acc_clean + acc_err) > 0.0)
+        else 0.0
+    )
+
     lbl_p, lbl_r, lbl_f1 = _safe_f1(multi_lbl_tp, multi_lbl_pred, multi_lbl_gold)
     pair_p, pair_r, pair_f1 = _safe_f1(multi_pair_tp, multi_pair_pred, multi_pair_gold)
 
-    result: dict[str, Any] = {
+    return {
+        "protocol_count": len(protocol_ids),
         "error_detection": {
             "total": ed_total,
             "correct": ed_correct,
             "accuracy": (ed_correct / ed_total) if ed_total else 0.0,
+            "clean_correct": clean_correct,
+            "clean_total": clean_total,
+            "clean_accuracy": acc_clean,
+            "error_correct": err_correct,
+            "error_total": err_total,
+            "error_accuracy": acc_err,
+            "balanced_accuracy": balanced_acc,
+            "normalized_predictions": normalized_preds,
             "step_index_correct": step_idx_correct,
             "step_index_relaxed_correct": step_idx_relaxed_correct,
             "step_index_total": step_idx_total,
@@ -349,25 +408,80 @@ def evaluate_records(
             "pair_precision": pair_p,
             "pair_recall": pair_r,
             "pair_f1": pair_f1,
+            "normalized_predictions": normalized_preds,
         },
     }
+
+
+def evaluate_records(
+    gold_records: Sequence[dict[str, Any]],
+    pred_records: Sequence[dict[str, Any]],
+    *,
+    train_records: Sequence[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Compute error-detection, step-ordering, error-repair, multi-fault, and per-split metrics."""
+    matched = _match_predictions(gold_records, pred_records)
+    normalized_pairs = [
+        (_normalize_gold(raw_gold), _normalize_pred(raw_pred))
+        for raw_gold, raw_pred in matched
+    ]
+
+    norm_golds = [g for g, _ in normalized_pairs]
+    norm_train = [_normalize_gold(t) for t in train_records] if train_records is not None else None
+    overlaps = detect_protocol_split_overlaps(norm_golds, train_records=norm_train)
+    if overlaps:
+        warnings.warn(
+            f"Protocol leakage detected: protocol_id(s) {overlaps} appear in both train and test",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    result = _compute_core_metrics(normalized_pairs)
+    result["split_overlap_protocols"] = overlaps
+
+    split_buckets: dict[str, list[tuple[dict[str, Any], dict[str, Any] | None]]] = {}
+    for g, p in normalized_pairs:
+        sp = g.get("split")
+        if isinstance(sp, str) and sp in VALID_SPLITS:
+            split_buckets.setdefault(sp, []).append((g, p))
+
+    by_split: dict[str, dict[str, Any]] = {}
+    for sp_name in VALID_SPLITS:
+        if sp_name in split_buckets:
+            by_split[sp_name] = _compute_core_metrics(split_buckets[sp_name])
+    result["by_split"] = by_split
     return result
 
 
 def format_evaluation_report(metrics: dict[str, Any]) -> str:
     """Format evaluation metrics as a compact human-readable report."""
     lines: list[str] = []
-    ed = metrics["error_detection"]
-    lines.append(
-        f"Error detection: {ed['correct']}/{ed['total']} ({ed['accuracy']:.1%}) "
-        f"| step_index: {ed['step_index_correct']}/{ed['step_index_total']} "
-        f"({ed['step_index_accuracy']:.1%})"
-    )
-    for err_type, stats in ed["per_error_type"].items():
-        acc_str = f"{stats['accuracy']:.1%}"
+    overlaps = metrics.get("split_overlap_protocols") or []
+    if overlaps:
         lines.append(
-            f"  - {err_type:18s}: {stats['correct']:3d}/{stats['total']:<3d} ({acc_str})"
+            f"WARNING: protocol_id overlap between train and test splits: {', '.join(overlaps)}"
         )
+
+    ed = metrics["error_detection"]
+    if ed["total"] == 0:
+        lines.append("Error detection: no single-fault records")
+    else:
+        norm_suffix = (
+            f" | normalized: {ed['normalized_predictions']}"
+            if ed.get("normalized_predictions", 0) > 0
+            else ""
+        )
+        lines.append(
+            f"Error detection: {ed['correct']}/{ed['total']} ({ed['accuracy']:.1%}) "
+            f"| balanced: {ed.get('balanced_accuracy', 0.0):.1%} "
+            f"| step_index: {ed['step_index_correct']}/{ed['step_index_total']} "
+            f"({ed['step_index_accuracy']:.1%}){norm_suffix}"
+        )
+        for err_type, stats in ed["per_error_type"].items():
+            acc_str = f"{stats['accuracy']:.1%}"
+            lines.append(
+                f"  - {err_type:18s}: {stats['correct']:3d}/{stats['total']:<3d} ({acc_str})"
+            )
 
     ordering = metrics["ordering"]
     if ordering["total"] > 0:
@@ -401,4 +515,29 @@ def format_evaluation_report(metrics: dict[str, Any]) -> str:
             f"({multi['exact_accuracy']:.1%}) | label F1 {multi['label_f1']:.1%} "
             f"| pair F1 {multi['pair_f1']:.1%}"
         )
+
+    by_split = metrics.get("by_split") or {}
+    if len(by_split) >= 2:
+        lines.append("Per-split breakdown:")
+        for sp_name in VALID_SPLITS:
+            if sp_name not in by_split:
+                continue
+            sm = by_split[sp_name]
+            sed = sm["error_detection"]
+            sord = sm["ordering"]
+            ed_str = (
+                f"{sed['correct']}/{sed['total']} ({sed['accuracy']:.1%}, "
+                f"bal {sed['balanced_accuracy']:.1%})"
+                if sed["total"] > 0
+                else "no single-fault records"
+            )
+            ord_str = (
+                f" | ord {sord['constraints_satisfied']}/{sord['total']} "
+                f"({sord['constraint_accuracy']:.1%})"
+                if sord["total"] > 0
+                else ""
+            )
+            lines.append(
+                f"  [{sp_name:5s}] ({sm['protocol_count']} protocols) ED {ed_str}{ord_str}"
+            )
     return "\n".join(lines)

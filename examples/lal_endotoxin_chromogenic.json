@@ -1,0 +1,15 @@
+[
+  {"type": "transfer", "source": "reservoir:endotoxin_sample", "dest": "plate1:F1", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:endotoxin_sample", "dest": "plate1:F2", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:limulus_enzyme", "dest": "plate1:F1", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:limulus_enzyme", "dest": "plate1:F2", "volume": 50, "unit": "uL"},
+  {"type": "mix", "well": "plate1:F1", "volume": 50, "unit": "uL", "cycles": 4},
+  {"type": "mix", "well": "plate1:F2", "volume": 50, "unit": "uL", "cycles": 4},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 16, "time_unit": "min"},
+  {"type": "transfer", "source": "reservoir:chromogen_substrate", "dest": "plate1:F1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:chromogen_substrate", "dest": "plate1:F2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 6, "time_unit": "min"},
+  {"type": "transfer", "source": "reservoir:acid_stop", "dest": "plate1:F1", "volume": 50, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:acid_stop", "dest": "plate1:F2", "volume": 50, "unit": "uL"},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 405}
+]

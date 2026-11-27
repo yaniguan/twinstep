@@ -1,0 +1,11 @@
+[
+  {"type": "transfer", "source": "reservoir:drug_compound", "dest": "plate1:E1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:drug_compound", "dest": "plate1:E2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 1440, "time_unit": "min"},
+  {"type": "transfer", "source": "reservoir:celltiter_viability", "dest": "plate1:E1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:celltiter_viability", "dest": "plate1:E2", "volume": 100, "unit": "uL"},
+  {"type": "mix", "well": "plate1:E1", "volume": 100, "unit": "uL", "cycles": 5},
+  {"type": "mix", "well": "plate1:E2", "volume": 100, "unit": "uL", "cycles": 5},
+  {"type": "incubate", "plate": "plate1", "temperature": 25, "time": 10, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "luminescence"}
+]

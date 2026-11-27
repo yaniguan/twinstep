@@ -11,6 +11,7 @@ from typing import Any
 
 from twinstep.dependencies import find_dependencies
 from twinstep.injectors import (
+    ERROR_TYPES,
     _swap_candidates,
     classify_difficulty,
     filter_records_by_difficulty,
@@ -25,6 +26,7 @@ from twinstep.schema import (
     steps_from_list,
     steps_to_dicts,
 )
+from twinstep.splits import assign_protocol_split, strip_for_blind_eval
 
 EXPORT_FORMATS: tuple[str, ...] = ("raw", "dpo", "mpo", "gdpo", "sft", "rlvr")
 
@@ -51,16 +53,22 @@ def _build_prompt(record: dict[str, Any]) -> str:
             f"Shuffled steps:\n{steps_json}"
         )
     steps_json = json.dumps(record["corrupted_steps"], indent=2)
+    allowed_fault_labels = ", ".join(f"'{lbl}'" for lbl in ERROR_TYPES)
     if task == "multi_error_detection":
         return (
             "Inspect the candidate liquid-handling protocol steps and identify all injected "
-            "errors. Respond with JSON containing 'labels', 'step_indices', and "
-            "'repaired_steps'.\n\n"
+            f"errors. Allowed error labels in 'labels': {allowed_fault_labels} (or [] if clean). "
+            "step_index is 0-based for every integer in 'step_indices'. Respond with JSON "
+            "containing 'labels', 'step_indices', and 'repaired_steps'.\n\n"
             f"Candidate steps:\n{steps_json}"
         )
     return (
         "Inspect the candidate liquid-handling protocol steps, identify any error label and "
-        "step_index (or 'clean' with null step_index), and provide 'repaired_steps' as JSON.\n\n"
+        "step_index, and provide 'repaired_steps' as JSON. "
+        f"Allowed 'label' values: 'clean', {allowed_fault_labels}. "
+        "step_index is 0-based (0 .. len(corrupted_steps) - 1 for mutated/swapped steps, "
+        "0 .. len(corrupted_steps) insertion index for 'missing_step', or null when "
+        "label is 'clean').\n\n"
         f"Candidate steps:\n{steps_json}"
     )
 
@@ -419,6 +427,7 @@ def _build_chosen_rejected(record: dict[str, Any]) -> tuple[dict[str, Any], dict
 def _build_ground_truth(record: dict[str, Any], task: str, difficulty: str) -> dict[str, Any]:
     gt: dict[str, Any] = {"task": task, "difficulty": difficulty}
     for key in (
+        "split",
         "label",
         "step_index",
         "original_value",
@@ -441,26 +450,51 @@ def _build_ground_truth(record: dict[str, Any], task: str, difficulty: str) -> d
     return gt
 
 
-def format_record(record: dict[str, Any], fmt: str = "raw") -> dict[str, Any]:
+def format_record(
+    record: dict[str, Any],
+    fmt: str = "raw",
+    *,
+    blind_eval: bool = False,
+) -> dict[str, Any]:
     """Serialize a record into ``raw``, ``dpo``, ``mpo``, ``gdpo``, ``sft``, or ``rlvr``."""
     if fmt not in EXPORT_FORMATS:
         raise ValueError(f"unsupported export format {fmt!r}; expected one of {EXPORT_FORMATS}")
 
     difficulty = str(record.get("difficulty") or classify_difficulty(record))
+    proto_id = str(record.get("protocol_id") or "")
+    split = str(record.get("split") or assign_protocol_split(proto_id))
     if fmt == "raw":
         raw_copy = dict(record)
+        raw_copy["split"] = split
         raw_copy["difficulty"] = difficulty
-        return raw_copy
+        return strip_for_blind_eval(raw_copy) if blind_eval else raw_copy
 
     prompt = _build_prompt(record)
+    task = str(record.get("task", "error_detection"))
+    if blind_eval:
+        blind_out: dict[str, Any] = {
+            "id": record.get("id"),
+            "protocol_id": record.get("protocol_id"),
+            "split": split,
+            "task": task,
+            "difficulty": difficulty,
+            "format": fmt,
+            "prompt": prompt,
+        }
+        if "corrupted_steps" in record:
+            blind_out["corrupted_steps"] = record["corrupted_steps"]
+        if "shuffled_steps" in record:
+            blind_out["shuffled_steps"] = record["shuffled_steps"]
+        return blind_out
+
     chosen_obj, rejected_candidates = _build_structured_preferences(record)
     rejected_obj = rejected_candidates[0]["payload"]
-    task = str(record.get("task", "error_detection"))
 
     if fmt == "dpo":
         return {
             "id": record.get("id"),
             "protocol_id": record.get("protocol_id"),
+            "split": split,
             "task": task,
             "difficulty": difficulty,
             "format": "dpo",
@@ -473,6 +507,7 @@ def format_record(record: dict[str, Any], fmt: str = "raw") -> dict[str, Any]:
         return {
             "id": record.get("id"),
             "protocol_id": record.get("protocol_id"),
+            "split": split,
             "task": task,
             "difficulty": difficulty,
             "format": "mpo",
@@ -501,6 +536,7 @@ def format_record(record: dict[str, Any], fmt: str = "raw") -> dict[str, Any]:
         return {
             "id": record.get("id"),
             "protocol_id": record.get("protocol_id"),
+            "split": split,
             "task": task,
             "difficulty": difficulty,
             "format": "gdpo",
@@ -519,13 +555,14 @@ def format_record(record: dict[str, Any], fmt: str = "raw") -> dict[str, Any]:
                 }
                 for cand in rejected_candidates
             ],
-            "ground_truth": _build_ground_truth(record, task, difficulty),
+            "ground_truth": _build_ground_truth({**record, "split": split}, task, difficulty),
         }
 
     if fmt == "sft":
         return {
             "id": record.get("id"),
             "protocol_id": record.get("protocol_id"),
+            "split": split,
             "task": task,
             "difficulty": difficulty,
             "format": "sft",
@@ -537,11 +574,12 @@ def format_record(record: dict[str, Any], fmt: str = "raw") -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": record.get("id"),
         "protocol_id": record.get("protocol_id"),
+        "split": split,
         "task": task,
         "difficulty": difficulty,
         "format": "rlvr",
         "prompt": prompt,
-        "ground_truth": _build_ground_truth(record, task, difficulty),
+        "ground_truth": _build_ground_truth({**record, "split": split}, task, difficulty),
     }
     if "corrupted_steps" in record:
         out["corrupted_steps"] = record["corrupted_steps"]
@@ -550,9 +588,14 @@ def format_record(record: dict[str, Any], fmt: str = "raw") -> dict[str, Any]:
     return out
 
 
-def format_records(records: Sequence[dict[str, Any]], fmt: str = "raw") -> list[dict[str, Any]]:
+def format_records(
+    records: Sequence[dict[str, Any]],
+    fmt: str = "raw",
+    *,
+    blind_eval: bool = False,
+) -> list[dict[str, Any]]:
     """Serialize a batch of records into the requested export format."""
-    return [format_record(rec, fmt=fmt) for rec in records]
+    return [format_record(rec, fmt=fmt, blind_eval=blind_eval) for rec in records]
 
 
 def export_contrastive_dataset(

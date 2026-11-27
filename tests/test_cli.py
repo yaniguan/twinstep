@@ -27,7 +27,7 @@ def test_cli_generate_baseline_eval_flow(
         for line in twins_path.read_text(encoding="utf-8").splitlines()
         if line
     ]
-    assert len(twin_lines) == 33
+    assert len(twin_lines) == len(inputs) * 11
 
     assert main(["baseline", str(twins_path), "-o", str(preds_path)]) == 0
     assert preds_path.exists()
@@ -36,13 +36,13 @@ def test_cli_generate_baseline_eval_flow(
         for line in preds_path.read_text(encoding="utf-8").splitlines()
         if line
     ]
-    assert len(pred_lines) == 33
+    assert len(pred_lines) == len(inputs) * 11
 
     capsys.readouterr()
     assert main(["eval", str(twins_path), str(preds_path), "--json"]) == 0
     out_json = json.loads(capsys.readouterr().out)
-    assert out_json["error_detection"]["total"] == 18
-    assert out_json["ordering"]["total"] == 15
+    assert out_json["error_detection"]["total"] == len(inputs) * 6
+    assert out_json["ordering"]["total"] == len(inputs) * 5
 
     # Direct --baseline evaluation AND omitted preds without --baseline (Issue #20).
     assert main(["eval", str(twins_path), "--baseline"]) == 0
@@ -61,7 +61,7 @@ def test_cli_expands_literal_glob_pattern(tmp_path: Path) -> None:
     pattern = str(EXAMPLES_DIR / "*.json")
     assert main(["generate", pattern, "--n", "2", "--seed", "0", "-o", str(out_path)]) == 0
     lines = [line for line in out_path.read_text(encoding="utf-8").splitlines() if line]
-    assert len(lines) == 3 * (2 + 1 + 2)
+    assert len(lines) == 24 * (2 + 1 + 2)
 
     with pytest.raises(FileNotFoundError, match="no protocol files matched pattern"):
         main(["generate", str(tmp_path / "nonexistent_*.json"), "-o", str(out_path)])

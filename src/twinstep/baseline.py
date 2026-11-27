@@ -27,6 +27,7 @@ from twinstep.schema import (
 
 _MIN_WAVELENGTH_NM = 190
 _MAX_WAVELENGTH_NM = 1100
+DEFAULT_MAX_INCUBATE_MIN: float = 4320.0
 
 
 def _classify_schema_error(raw_item: Any, idx: int, exc: ValueError) -> dict[str, Any]:
@@ -74,7 +75,12 @@ def _volume_in_ul(volume: float, unit: str) -> float:
     return volume * 1000.0 if unit == "mL" else volume
 
 
-def _check_single_step_bounds(idx: int, step: Step) -> dict[str, Any] | None:
+def _check_single_step_bounds(
+    idx: int,
+    step: Step,
+    *,
+    max_incubate_min: float = DEFAULT_MAX_INCUBATE_MIN,
+) -> dict[str, Any] | None:
     if isinstance(step, (TransferStep, MixStep)):
         vol_ul = _volume_in_ul(step.volume, step.unit)
         touches_well = (
@@ -147,12 +153,13 @@ def _check_single_step_bounds(idx: int, step: Step) -> dict[str, Any] | None:
                 "step_index": idx,
                 "reason": f"step {idx} incubate duration {step.time:g} s outside [5, 600] s",
             }
-        if step.time_unit == "min" and (step.time < 1.0 or step.time > 180.0):
+        if step.time_unit == "min" and (step.time < 1.0 or step.time > max_incubate_min):
             return {
                 "label": "wrong_time",
                 "step_index": idx,
                 "reason": (
-                    f"step {idx} incubate duration {step.time:g} min outside [1, 180] min"
+                    f"step {idx} incubate duration {step.time:g} min outside "
+                    f"[1, {max_incubate_min:g}] min"
                 ),
             }
     elif isinstance(step, ReadStep):
@@ -202,7 +209,24 @@ def _wells_of_step(step: Step, default_plate: str) -> set[str]:
     return wells
 
 
-def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
+def _reset_stage_fills(
+    plates: set[str],
+    fill_counts: dict[str, int],
+    mixed_since_fill: dict[str, bool],
+    default_plate: str = "plate1",
+) -> None:
+    for w in list(fill_counts):
+        w_plate = plate_of(w, default_plate)
+        if not plates or (w_plate is not None and w_plate in plates):
+            fill_counts[w] = 0
+            mixed_since_fill[w] = False
+
+
+def predict_error(
+    raw_steps: Sequence[Step | dict[str, Any]],
+    *,
+    max_incubate_min: float = DEFAULT_MAX_INCUBATE_MIN,
+) -> dict[str, Any]:
     """Predict whether a step sequence contains an error using sanity and dependency rules."""
     steps: list[Step] = []
     for idx, item in enumerate(raw_steps):
@@ -225,23 +249,24 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
     # 2 & 3. Volume, unit, temperature, time, and wavelength sanity checks.
     for idx, step in enumerate(steps):
         if isinstance(step, (TransferStep, MixStep, WashStep)):
-            hit = _check_single_step_bounds(idx, step)
+            hit = _check_single_step_bounds(idx, step, max_incubate_min=max_incubate_min)
             if hit is not None:
                 return hit
     for idx, step in enumerate(steps):
         if isinstance(step, (IncubateStep, ReadStep)):
-            hit = _check_single_step_bounds(idx, step)
+            hit = _check_single_step_bounds(idx, step, max_incubate_min=max_incubate_min)
             if hit is not None:
                 return hit
 
     # 4. Missing step heuristics: uninitialized/unmixed wells or missing final read.
+    initialized_wells: set[str] = set()
     fill_counts: dict[str, int] = {}
     mixed_since_fill: dict[str, bool] = {}
     for idx, step in enumerate(steps):
         if isinstance(step, TransferStep):
             if is_well_ref(step.source):
                 src_w = canonical_well(step.source, default_plate)
-                if fill_counts.get(src_w, 0) == 0:
+                if src_w not in initialized_wells:
                     return {
                         "label": "missing_step",
                         "step_index": idx,
@@ -255,12 +280,13 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                     }
             if is_well_ref(step.dest):
                 dst_w = canonical_well(step.dest, default_plate)
+                initialized_wells.add(dst_w)
                 fill_counts[dst_w] = fill_counts.get(dst_w, 0) + 1
                 mixed_since_fill[dst_w] = False
         elif isinstance(step, MixStep):
             if is_well_ref(step.well):
                 w = canonical_well(step.well, default_plate)
-                if fill_counts.get(w, 0) == 0:
+                if w not in initialized_wells:
                     return {
                         "label": "missing_step",
                         "step_index": idx,
@@ -268,8 +294,9 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                     }
                 mixed_since_fill[w] = True
         elif isinstance(step, IncubateStep):
+            inc_plates = step_plates(step, default_plate)
             unmixed = _unmixed_well_on_plates(
-                step_plates(step, default_plate),
+                inc_plates,
                 fill_counts,
                 mixed_since_fill,
                 default_plate,
@@ -280,6 +307,7 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                     "step_index": idx,
                     "reason": f"step {idx} incubates before mixing multi-reagent well {unmixed}",
                 }
+            _reset_stage_fills(inc_plates, fill_counts, mixed_since_fill, default_plate)
         elif isinstance(step, WashStep):
             if step.well is not None:
                 w = canonical_well(step.well, default_plate)
@@ -305,10 +333,7 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                             f"multi-reagent well {unmixed}"
                         ),
                     }
-                for w in list(fill_counts):
-                    if plate_of(w, default_plate) == p_norm:
-                        fill_counts[w] = 0
-                        mixed_since_fill[w] = False
+                _reset_stage_fills({p_norm}, fill_counts, mixed_since_fill, default_plate)
         elif isinstance(step, ReadStep):
             p_norm = canonical_plate(step.plate)
             unmixed = _unmixed_well_on_plates(
@@ -323,6 +348,7 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
                         f"multi-reagent well {unmixed}"
                     ),
                 }
+            _reset_stage_fills({p_norm}, fill_counts, mixed_since_fill, default_plate)
 
     has_read = any(isinstance(step, ReadStep) for step in steps)
     if not has_read and len(steps) >= 2:
@@ -339,7 +365,11 @@ def predict_error(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str, Any]:
+def predict_multi_errors(
+    raw_steps: Sequence[Step | dict[str, Any]],
+    *,
+    max_incubate_min: float = DEFAULT_MAX_INCUBATE_MIN,
+) -> dict[str, Any]:
     """Scan all candidate steps to collect multiple fault labels and step indices."""
     found: list[tuple[int, str, str]] = []
     seen_indices: set[int] = set()
@@ -360,7 +390,7 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
     for idx, step in enumerate(valid_steps):
         if step is None or idx in seen_indices:
             continue
-        bound_hit = _check_single_step_bounds(idx, step)
+        bound_hit = _check_single_step_bounds(idx, step, max_incubate_min=max_incubate_min)
         if bound_hit is not None:
             found.append((idx, bound_hit["label"], bound_hit["reason"]))
             seen_indices.add(idx)
@@ -384,6 +414,7 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
             for _, s in clean_pairs
             if isinstance(s, TransferStep) and is_well_ref(s.dest)
         }
+        initialized_wells: set[str] = set()
         fill_counts: dict[str, int] = {}
         mixed_since_fill: dict[str, bool] = {}
         for orig_idx, step in clean_pairs:
@@ -391,7 +422,7 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
                 if is_well_ref(step.source):
                     src_w = canonical_well(step.source, default_plate)
                     if (
-                        fill_counts.get(src_w, 0) == 0
+                        src_w not in initialized_wells
                         and src_w not in ever_filled
                         and src_w not in swapped_wells
                         and orig_idx not in seen_indices
@@ -421,13 +452,14 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
                         mixed_since_fill[src_w] = True
                 if is_well_ref(step.dest):
                     dst_w = canonical_well(step.dest, default_plate)
+                    initialized_wells.add(dst_w)
                     fill_counts[dst_w] = fill_counts.get(dst_w, 0) + 1
                     mixed_since_fill[dst_w] = False
             elif isinstance(step, MixStep):
                 if is_well_ref(step.well):
                     w = canonical_well(step.well, default_plate)
                     if (
-                        fill_counts.get(w, 0) == 0
+                        w not in initialized_wells
                         and w not in ever_filled
                         and w not in swapped_wells
                         and orig_idx not in seen_indices
@@ -442,8 +474,9 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
                         seen_indices.add(orig_idx)
                     mixed_since_fill[w] = True
             elif isinstance(step, IncubateStep):
+                inc_plates = step_plates(step, default_plate)
                 unmixed = _unmixed_well_on_plates(
-                    step_plates(step, default_plate),
+                    inc_plates,
                     fill_counts,
                     mixed_since_fill,
                     default_plate,
@@ -458,7 +491,7 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
                         )
                     )
                     seen_indices.add(orig_idx)
-                    mixed_since_fill[unmixed] = True
+                _reset_stage_fills(inc_plates, fill_counts, mixed_since_fill, default_plate)
             elif isinstance(step, WashStep):
                 if step.well is not None:
                     w = canonical_well(step.well, default_plate)
@@ -497,10 +530,7 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
                             )
                         )
                         seen_indices.add(orig_idx)
-                    for w in list(fill_counts):
-                        if plate_of(w, default_plate) == p_norm:
-                            fill_counts[w] = 0
-                            mixed_since_fill[w] = False
+                    _reset_stage_fills({p_norm}, fill_counts, mixed_since_fill, default_plate)
             elif isinstance(step, ReadStep):
                 p_norm = canonical_plate(step.plate)
                 unmixed = _unmixed_well_on_plates(
@@ -520,7 +550,7 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
                         )
                     )
                     seen_indices.add(orig_idx)
-                    mixed_since_fill[unmixed] = True
+                _reset_stage_fills({p_norm}, fill_counts, mixed_since_fill, default_plate)
 
     has_any_read = any(isinstance(s, ReadStep) for _, s in clean_pairs) or any(
         isinstance(item, dict) and item.get("type") == "read" for item in raw_steps
@@ -537,39 +567,138 @@ def predict_multi_errors(raw_steps: Sequence[Step | dict[str, Any]]) -> dict[str
     }
 
 
-def _stage_rank(step: Step | None) -> int:
-    if isinstance(step, TransferStep):
-        return 0
-    if isinstance(step, MixStep):
-        return 1
-    if isinstance(step, IncubateStep):
-        return 2
-    if isinstance(step, WashStep):
-        return 3
-    if isinstance(step, ReadStep):
-        return 4
-    return 5
+def _is_stop_transfer(step: Step | None) -> bool:
+    if not isinstance(step, TransferStep):
+        return False
+    src_low = step.source.lower()
+    return any(tok in src_low for tok in ("stop", "quench", "h2so4", "hcl", "acid"))
+
+
+def _incubate_seconds(step: IncubateStep) -> float:
+    return step.time * 60.0 if step.time_unit == "min" else step.time
+
+
+def _incubate_sort_key(steps: Sequence[Step | None], i_idx: int) -> tuple[float, float, int]:
+    st = steps[i_idx]
+    if isinstance(st, IncubateStep):
+        return (-_incubate_seconds(st), -st.temperature, i_idx)
+    return (0.0, 0.0, i_idx)
+
+
+def _wash_sort_key(steps: Sequence[Step | None], w_idx: int) -> tuple[int, float, int]:
+    st = steps[w_idx]
+    if isinstance(st, WashStep):
+        return (st.cycles, -_volume_in_ul(st.volume, st.unit), w_idx)
+    return (0, 0.0, w_idx)
 
 
 def _transfer_role_key(step: TransferStep, orig_idx: int) -> tuple[int, float, int]:
     src_low = step.source.lower()
-    if any(
+    if _is_stop_transfer(step):
+        role = 7
+    elif any(
         tok in src_low
-        for tok in ("buf", "coat", "block", "sample", "water", "pbs", "media", "diluent")
+        for tok in (
+            "tmb",
+            "substrate",
+            "opd",
+            "abts",
+            "pnpp",
+            "ecl",
+            "viability",
+            "celltiter",
+            "alamar",
+            "resazurin",
+            "mtt",
+            "wst",
+            "ctg",
+            "lucifer",
+            "atp",
+            "dye",
+            "fluor",
+            "sybr",
+            "picogreen",
+            "qubit",
+            "bca",
+            "bradford",
+            "coomassie",
+            "chromogen",
+            "develop",
+            "elut",
+        )
     ):
+        role = 6
+    elif any(tok in src_low for tok in ("coat", "capture", "seed", "cells", "cell_")):
         role = 0
     elif any(
         tok in src_low
         for tok in (
-            "substrate",
-            "dye",
-            "detect",
-            "conjugate",
-            "stop",
-            "quench",
-            "elut",
-            "develop",
             "secondary",
+            "ab2",
+            "conjugate",
+            "hrp",
+            "streptavidin",
+            "avidin",
+            "biotin",
+            "probe",
+            "detect",
+        )
+    ):
+        role = 5
+    elif any(
+        tok in src_low
+        for tok in (
+            "primary",
+            "ab1",
+            "enzyme",
+            "mastermix",
+            "pcr",
+            "rt_",
+            "rnp",
+            "cas9",
+            "grna",
+            "sgrna",
+            "gibson",
+            "ligase",
+            "lal",
+            "limulus",
+        )
+    ):
+        role = 4
+    elif any(
+        tok in src_low
+        for tok in (
+            "sample",
+            "standard",
+            "calibrator",
+            "analyte",
+            "antigen",
+            "compound",
+            "drug",
+            "ligand",
+            "inhibitor",
+            "treat",
+            "template",
+            "dna",
+            "rna",
+            "plasmid",
+            "lysate",
+            "endotoxin",
+        )
+    ):
+        role = 3
+    elif any(
+        tok in src_low
+        for tok in (
+            "block",
+            "bsa",
+            "casein",
+            "milk",
+            "neutraliz",
+            "bind",
+            "bead",
+            "spri",
+            "ampure",
         )
     ):
         role = 2
@@ -663,8 +792,13 @@ def _assign_plate_cycles(
     for plate in sorted(multi_plates):
         p_cyc = plate_cycles[plate]
         reads = plate_reads.get(plate, [])
-        washes = plate_washes.get(plate, [])
-        incubates = plate_incubates.get(plate, [])
+        raw_washes = plate_washes.get(plate, [])
+        washes = sorted(raw_washes, key=lambda w_idx: _wash_sort_key(steps, w_idx))
+        raw_incubates = plate_incubates.get(plate, [])
+        incubates = sorted(
+            raw_incubates,
+            key=lambda i_idx: _incubate_sort_key(steps, i_idx),
+        )
         num_cycles = max(len(reads), len(washes), len(incubates))
 
         for c_idx, step_idx in enumerate(reads):
@@ -675,7 +809,7 @@ def _assign_plate_cycles(
         for c_idx, step_idx in enumerate(incubates):
             inc_offset = (
                 num_cycles - len(incubates)
-                if (len(incubates) < num_cycles and len(washes) > 0)
+                if (len(incubates) < num_cycles and len(reads) >= 2 and len(washes) > 0)
                 else 0
             )
             p_cyc[step_idx] = min(num_cycles - 1, inc_offset + c_idx)
@@ -702,20 +836,29 @@ def _assign_plate_cycles(
                 mixes_by_well.setdefault(canonical_well(step.well, default_plate), []).append(idx)
 
         well_max_cycle: dict[str, int] = {}
+        well_cyc_counts: dict[tuple[str, int], int] = {}
         for well, idxs in incoming_by_well.items():
-            if len(idxs) == 1:
-                src_step = steps[idxs[0]]
+            if len(incubates) >= 1:
+                stop_idxs = [i for i in idxs if _is_stop_transfer(steps[i])]
+                pre_idxs = [i for i in idxs if not _is_stop_transfer(steps[i])]
+            else:
+                stop_idxs = []
+                pre_idxs = list(idxs)
+
+            if len(pre_idxs) == 1:
+                src_step = steps[pre_idxs[0]]
                 assert isinstance(src_step, TransferStep)
                 if max_depth >= 1 and is_well_ref(src_step.source):
                     d = well_depth.get(canonical_well(src_step.source, default_plate), 0) + 1
                 else:
                     d = 0
                 cyc_val = min(num_cycles - 1, d)
-                p_cyc[idxs[0]] = cyc_val
+                p_cyc[pre_idxs[0]] = cyc_val
+                well_cyc_counts[(well, cyc_val)] = well_cyc_counts.get((well, cyc_val), 0) + 1
                 well_max_cycle[well] = max(well_max_cycle.get(well, 0), cyc_val)
-            else:
+            elif len(pre_idxs) >= 2:
                 ordered_idxs = sorted(
-                    idxs,
+                    pre_idxs,
                     key=lambda s_idx: _transfer_idx_key(steps, s_idx),
                 )
                 for pos, step_idx in enumerate(ordered_idxs):
@@ -723,7 +866,14 @@ def _assign_plate_cycles(
                         num_cycles - 1, (pos * num_cycles) // max(1, len(ordered_idxs))
                     )
                     p_cyc[step_idx] = cyc_val
+                    well_cyc_counts[(well, cyc_val)] = (
+                        well_cyc_counts.get((well, cyc_val), 0) + 1
+                    )
                     well_max_cycle[well] = max(well_max_cycle.get(well, 0), cyc_val)
+
+            for st_idx in stop_idxs:
+                p_cyc[st_idx] = num_cycles - 1
+                well_max_cycle[well] = max(well_max_cycle.get(well, 0), num_cycles - 1)
 
         for step_idx in outgoing_only:
             out_step = steps[step_idx]
@@ -742,6 +892,25 @@ def _assign_plate_cycles(
                 and len(incoming_by_well.get(well, [])) <= 1
             ):
                 p_cyc[idxs[0]] = min(num_cycles - 1, well_depth[well])
+            elif len(idxs) == 1:
+                multi_fill_cycs = [
+                    c
+                    for c in range(num_cycles)
+                    if well_cyc_counts.get((well, c), 0) >= 2
+                ]
+                active_cycs = [
+                    c
+                    for c in range(num_cycles)
+                    if well_cyc_counts.get((well, c), 0) >= 1
+                ]
+                if len(multi_fill_cycs) == 1:
+                    p_cyc[idxs[0]] = multi_fill_cycs[0]
+                elif not washes and len(active_cycs) >= 2:
+                    p_cyc[idxs[0]] = max(active_cycs)
+                elif active_cycs:
+                    p_cyc[idxs[0]] = active_cycs[0]
+                else:
+                    p_cyc[idxs[0]] = 0
             else:
                 ordered_mixes = sorted(
                     idxs,
@@ -758,11 +927,9 @@ def _assign_plate_cycles(
 def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
     """Reconstruct a dependency-valid execution order over shuffled steps.
 
-    Single-cycle protocols use canonical stage ordering
-    (``transfer -> mix -> incubate -> wash -> read``) plus well liquid-flow edges.
-    When multiple ``ReadStep``/``WashStep``/``IncubateStep`` barriers appear on the same
-    plate, steps are partitioned into per-plate cycle segments first, and cycle-forming
-    reciprocal well transfers are oriented using external reservoir fills.
+    Builds an inferred causal dependency DAG from per-well liquid dataflow and
+    per-plate barrier cycles, then runs Kahn's topological sort with a stable
+    tie-break by input position (never forcing global step-type ranks).
     """
     steps: list[Step | None] = []
     for item in raw_steps:
@@ -781,6 +948,40 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
     multi_plates = {
         p for p, cyc_list in plate_cycles.items() if any(c > 0 for c in cyc_list)
     }
+
+    plate_has_incubate: dict[str, bool] = {p: False for p in all_plates}
+    for step in steps:
+        if isinstance(step, IncubateStep):
+            if step.plate is not None:
+                plate_has_incubate[canonical_plate(step.plate)] = True
+            else:
+                for p in all_plates:
+                    plate_has_incubate[p] = True
+
+    # Identify post-incubation quench recipient wells: wells fed only by another well + stop/quench.
+    quench_wells: set[str] = set()
+    incoming_non_stop_ext: set[str] = set()
+    incoming_from_well: set[str] = set()
+    incoming_stop: set[str] = set()
+    for step in steps:
+        if isinstance(step, TransferStep) and is_well_ref(step.dest):
+            dw = canonical_well(step.dest, default_plate)
+            if is_well_ref(step.source):
+                incoming_from_well.add(dw)
+            elif _is_stop_transfer(step):
+                incoming_stop.add(dw)
+            else:
+                incoming_non_stop_ext.add(dw)
+    quench_wells = (incoming_from_well & incoming_stop) - incoming_non_stop_ext
+
+    def _is_post_incubate_quench_step(step: Step | None) -> bool:
+        if step is None:
+            return False
+        if isinstance(step, TransferStep) and is_well_ref(step.dest):
+            return canonical_well(step.dest, default_plate) in quench_wells
+        if isinstance(step, MixStep) and is_well_ref(step.well):
+            return canonical_well(step.well, default_plate) in quench_wells
+        return False
 
     def _effective_plates(step: Step | None) -> set[str]:
         if step is None:
@@ -869,7 +1070,7 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
                 if stage > 0:
                     add_edge(sorted_mixes[stage - 1], t_idx)
 
-    # 2. Well liquid flow and intra-cycle stage barriers.
+    # 2. Well liquid flow and intra-cycle causal barriers.
     pair_indices = sorted(
         [(i, j) for i in range(n) for j in range(n) if i != j],
         key=lambda pair: (
@@ -904,7 +1105,11 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
             ca = plate_cycles[pw][i] if pw is not None and pw in plate_cycles else 0
             cb = plate_cycles[pw][j] if pw is not None and pw in plate_cycles else 0
             if ca == cb and (w, ca) not in multi_mix_keys:
-                add_edge(i, j)
+                if (
+                    not (_is_stop_transfer(a) and pw is not None and plate_has_incubate.get(pw))
+                    or w in quench_wells
+                ):
+                    add_edge(i, j)
         elif (
             isinstance(a, TransferStep)
             and isinstance(b, TransferStep)
@@ -939,43 +1144,56 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
                 for k, sk in enumerate(steps)
                 if sk is not None
             )
+            has_later_read_on_p = p_is_multi and any(
+                isinstance(sk, ReadStep) and canonical_plate(sk.plate) == p and p_cyc[k] > p_cyc[i]
+                for k, sk in enumerate(steps)
+                if sk is not None
+            )
+
+            # Post-incubation stop/quench transfer or aliquot-quench well steps follow IncubateStep.
+            if (
+                isinstance(a, IncubateStep)
+                and (_is_stop_transfer(b) or _is_post_incubate_quench_step(b))
+                and not has_later_cycle
+            ):
+                add_edge(i, j)
+                continue
+            if (
+                (_is_stop_transfer(a) or _is_post_incubate_quench_step(a))
+                and isinstance(b, IncubateStep)
+                and not has_later_cycle
+            ):
+                continue
+
             if (
                 p_is_multi
                 and isinstance(a, ReadStep)
                 and isinstance(b, WashStep)
                 and b.well is None
-                and has_later_cycle
+                and has_later_read_on_p
             ):
                 add_edge(i, j)
-            elif _stage_rank(a) < _stage_rank(b):
+            elif isinstance(a, (TransferStep, MixStep)) and isinstance(b, IncubateStep):
+                add_edge(i, j)
+            elif isinstance(a, (TransferStep, MixStep, IncubateStep)) and isinstance(b, WashStep):
+                add_edge(i, j)
+            elif not isinstance(a, ReadStep) and isinstance(b, ReadStep):
                 if (
                     p_is_multi
                     and isinstance(a, WashStep)
                     and a.well is None
-                    and isinstance(b, ReadStep)
-                    and has_later_cycle
+                    and has_later_read_on_p
                 ):
                     continue
-                if isinstance(b, (IncubateStep, WashStep, ReadStep)) or isinstance(
-                    a, (IncubateStep, WashStep)
-                ):
-                    add_edge(i, j)
+                add_edge(i, j)
 
-    def _step_cycle_rank(idx: int) -> int:
-        eff = _effective_plates(steps[idx])
-        if not eff:
-            return 0
-        return max(plate_cycles[p][idx] for p in eff if p in plate_cycles)
-
-    heap: list[tuple[int, int, int]] = []
-    for idx in range(n):
-        if indegree[idx] == 0:
-            heapq.heappush(heap, (_step_cycle_rank(idx), _stage_rank(steps[idx]), idx))
+    heap: list[int] = [idx for idx in range(n) if indegree[idx] == 0]
+    heapq.heapify(heap)
 
     order: list[int] = []
     visited = [False] * n
     while heap:
-        _, _, u = heapq.heappop(heap)
+        u = heapq.heappop(heap)
         if visited[u]:
             continue
         visited[u] = True
@@ -983,23 +1201,20 @@ def predict_order(raw_steps: Sequence[Step | dict[str, Any]]) -> list[int]:
         for v in sorted(adj[u]):
             indegree[v] -= 1
             if indegree[v] == 0:
-                heapq.heappush(heap, (_step_cycle_rank(v), _stage_rank(steps[v]), v))
+                heapq.heappush(heap, v)
 
     if len(order) < n:
         remaining = [i for i in range(n) if not visited[i]]
-        remaining.sort(
-            key=lambda idx: (
-                _step_cycle_rank(idx),
-                indegree[idx],
-                _stage_rank(steps[idx]),
-                idx,
-            )
-        )
+        remaining.sort(key=lambda idx: (indegree[idx], idx))
         order.extend(remaining)
     return order
 
 
-def predict_record(record: dict[str, Any]) -> dict[str, Any]:
+def predict_record(
+    record: dict[str, Any],
+    *,
+    max_incubate_min: float = DEFAULT_MAX_INCUBATE_MIN,
+) -> dict[str, Any]:
     """Generate a prediction dict for error_detection, multi_error_detection, or ordering."""
     if "ground_truth" in record and isinstance(record["ground_truth"], dict):
         gt = record["ground_truth"]
@@ -1008,7 +1223,7 @@ def predict_record(record: dict[str, Any]) -> dict[str, Any]:
         task = str(record.get("task", "error_detection"))
 
     if task == "error_detection":
-        pred = predict_error(record["corrupted_steps"])
+        pred = predict_error(record["corrupted_steps"], max_incubate_min=max_incubate_min)
         return {
             "id": record.get("id"),
             "task": "error_detection",
@@ -1018,7 +1233,7 @@ def predict_record(record: dict[str, Any]) -> dict[str, Any]:
             "reason": pred["reason"],
         }
     if task == "multi_error_detection":
-        mpred = predict_multi_errors(record["corrupted_steps"])
+        mpred = predict_multi_errors(record["corrupted_steps"], max_incubate_min=max_incubate_min)
         return {
             "id": record.get("id"),
             "task": "multi_error_detection",

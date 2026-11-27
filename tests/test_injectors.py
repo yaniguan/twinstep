@@ -145,8 +145,8 @@ def test_generate_dataset_is_deterministic_with_seed() -> None:
 
     assert run_a == run_b
     assert run_a != run_c
-    # 3 protocols * (5 twins + 1 clean + 5 ordering) = 33
-    assert len(run_a) == 33
+    # 24 protocols * (5 twins + 1 clean + 5 ordering) = 264
+    assert len(run_a) == len(protocols) * 11
 
     ed_records = [rec for rec in run_a if rec["task"] == "error_detection"]
     keys = [

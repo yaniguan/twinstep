@@ -15,6 +15,7 @@ from twinstep.evaluate import evaluate_records, format_evaluation_report
 from twinstep.formats import EXPORT_FORMATS, format_records
 from twinstep.injectors import DIFFICULTY_FILTERS, generate_dataset
 from twinstep.schema import load_protocol
+from twinstep.splits import SPLIT_FILTERS, assign_protocol_split
 
 
 def _parse_jsonl_stream(handle: TextIO, source_label: str) -> list[dict[str, Any]]:
@@ -67,7 +68,13 @@ def _expand_protocol_paths(raw_patterns: Sequence[str]) -> list[Path]:
 
 def _cmd_generate(args: argparse.Namespace) -> int:
     paths = _expand_protocol_paths(args.protocols)
-    protocols = [load_protocol(p) for p in paths]
+    all_protocols = [load_protocol(p) for p in paths]
+    if args.split != "all":
+        protocols = [
+            p for p in all_protocols if assign_protocol_split(p.protocol_id, p.split) == args.split
+        ]
+    else:
+        protocols = all_protocols
     raw_records = generate_dataset(
         protocols,
         n_twins=args.n,
@@ -77,8 +84,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         k_errors=args.k_errors,
         difficulty=args.difficulty,
         include_saboteurs=bool(args.include_saboteurs),
+        split=args.split,
     )
-    records = format_records(raw_records, fmt=args.format)
+    records = format_records(raw_records, fmt=args.format, blind_eval=bool(args.blind_eval))
     out_path = Path(args.output) if args.output and args.output != "-" else None
     _write_jsonl(records, out_path)
     if out_path is not None:
@@ -97,13 +105,39 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
-    gold = _read_jsonl(args.twins)
+    all_gold = _read_jsonl(args.twins)
+    train_records: list[dict[str, Any]] | None = None
+    if args.train_twins is not None:
+        train_records = _read_jsonl(args.train_twins)
+
+    if args.split != "all":
+        if train_records is None and args.split == "test":
+            train_records = [
+                r
+                for r in all_gold
+                if (r.get("split") or assign_protocol_split(str(r.get("protocol_id") or "")))
+                == "train"
+            ]
+        gold = [
+            r
+            for r in all_gold
+            if (r.get("split") or assign_protocol_split(str(r.get("protocol_id") or "")))
+            == args.split
+        ]
+    else:
+        gold = all_gold
+
     if args.baseline or args.preds is None:
         preds = [predict_record(rec) for rec in gold]
     else:
         preds = _read_jsonl(args.preds)
 
-    metrics = evaluate_records(gold, preds)
+    metrics = evaluate_records(gold, preds, train_records=train_records)
+    if metrics.get("split_overlap_protocols"):
+        overlaps_str = ", ".join(metrics["split_overlap_protocols"])
+        sys.stderr.write(
+            f"WARNING: protocol_id overlap between train and test splits: {overlaps_str}\n"
+        )
     if args.json:
         print(json.dumps(metrics, indent=2))
     else:
@@ -143,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of non-overlapping errors per twin (default: 1).",
     )
     gen.add_argument(
+        "--split",
+        choices=SPLIT_FILTERS,
+        default="all",
+        help="Whole-protocol split filter: all (default), train, val, or test.",
+    )
+    gen.add_argument(
         "--format",
         choices=EXPORT_FORMATS,
         default="raw",
@@ -158,6 +198,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-saboteurs",
         action="store_true",
         help="Include stealth evolutionary saboteur hard-negative twins.",
+    )
+    gen.add_argument(
+        "--blind-eval",
+        action="store_true",
+        help="Strip correct_steps, gold_order, and ground-truth labels for blind evaluation.",
     )
     gen.add_argument("--seed", type=int, default=0, help="Deterministic RNG seed (default: 0).")
     gen.add_argument("-o", "--output", default=None, help="Output JSONL path (default: stdout).")
@@ -184,6 +229,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--baseline",
         action="store_true",
         help="Evaluate the built-in rule-based baseline directly.",
+    )
+    ev.add_argument(
+        "--split",
+        choices=SPLIT_FILTERS,
+        default="all",
+        help="Score only records belonging to the given whole-protocol split.",
+    )
+    ev.add_argument(
+        "--train-twins",
+        default=None,
+        help="Optional train twins JSONL file to warn on train/test protocol_id overlap.",
     )
     ev.add_argument("--json", action="store_true", help="Print metrics as JSON.")
     ev.set_defaults(func=_cmd_eval)

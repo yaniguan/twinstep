@@ -1,0 +1,433 @@
+{
+  "schema_version": "twinstep-frontier-eval/v1",
+  "heldout_test_split": {
+    "split": "test",
+    "test_protocol_count": 12,
+    "train_protocol_count": 8,
+    "val_protocol_count": 4,
+    "train_test_overlap_count": 0,
+    "seed_0": {
+      "rule_baseline": {
+        "protocol_count": 12,
+        "ed_correct": 41,
+        "ed_total": 72,
+        "ed_accuracy": 0.5694,
+        "ed_wilson_95_ci": [
+          0.4544,
+          0.6774
+        ],
+        "ed_balanced_accuracy": 0.6517,
+        "step_index_correct": 29,
+        "step_index_total": 60,
+        "step_index_accuracy": 0.4833,
+        "ord_constraints_satisfied": 60,
+        "ord_total": 60,
+        "ord_constraint_accuracy": 1.0,
+        "ord_pairwise_accuracy": 1.0
+      },
+      "learned_stdlib": {
+        "protocol_count": 12,
+        "ed_correct": 58,
+        "ed_total": 72,
+        "ed_accuracy": 0.8056,
+        "ed_wilson_95_ci": [
+          0.6997,
+          0.8805
+        ],
+        "ed_balanced_accuracy": 0.8679,
+        "step_index_correct": 44,
+        "step_index_total": 60,
+        "step_index_accuracy": 0.7333,
+        "ord_constraints_satisfied": 60,
+        "ord_total": 60,
+        "ord_constraint_accuracy": 1.0,
+        "ord_pairwise_accuracy": 1.0
+      },
+      "learned_sklearn": {
+        "protocol_count": 12,
+        "ed_correct": 59,
+        "ed_total": 72,
+        "ed_accuracy": 0.8194,
+        "ed_wilson_95_ci": [
+          0.7152,
+          0.8913
+        ],
+        "ed_balanced_accuracy": 0.8785,
+        "step_index_correct": 45,
+        "step_index_total": 60,
+        "step_index_accuracy": 0.75,
+        "ord_constraints_satisfied": 60,
+        "ord_total": 60,
+        "ord_constraint_accuracy": 1.0,
+        "ord_pairwise_accuracy": 1.0
+      },
+      "learned_lightgbm": {
+        "protocol_count": 12,
+        "ed_correct": 52,
+        "ed_total": 72,
+        "ed_accuracy": 0.7222,
+        "ed_wilson_95_ci": [
+          0.6095,
+          0.8124
+        ],
+        "ed_balanced_accuracy": 0.7609,
+        "step_index_correct": 41,
+        "step_index_total": 60,
+        "step_index_accuracy": 0.6833,
+        "ord_constraints_satisfied": 60,
+        "ord_total": 60,
+        "ord_constraint_accuracy": 1.0,
+        "ord_pairwise_accuracy": 1.0
+      }
+    },
+    "seeds_0_to_19_rule_baseline": {
+      "ed_accuracy_mean": 0.5771,
+      "ed_accuracy_std": 0.0454,
+      "ed_accuracy_min": 0.4861,
+      "ed_accuracy_max": 0.6389,
+      "ed_balanced_mean": 0.6582,
+      "ed_balanced_std": 0.0496,
+      "step_index_mean": 0.4417,
+      "step_index_std": 0.0494,
+      "ord_constraint_mean": 1.0,
+      "ord_constraint_std": 0.0
+    },
+    "seeds_0_to_19_learned_stdlib": {
+      "ed_accuracy_mean": 0.8132,
+      "ed_accuracy_std": 0.0467,
+      "ed_balanced_mean": 0.8727,
+      "ed_balanced_std": 0.0373,
+      "step_index_mean": 0.7067,
+      "step_index_std": 0.0558
+    }
+  },
+  "public_corpora": {
+    "wlp": {
+      "spdx_license": "MIT",
+      "eval_only": false,
+      "protocols_parsed": 6,
+      "rule_baseline": {
+        "protocol_count": 6,
+        "ed_correct": 19,
+        "ed_total": 36,
+        "ed_accuracy": 0.5278,
+        "ed_wilson_95_ci": [
+          0.3701,
+          0.6801
+        ],
+        "ed_balanced_accuracy": 0.5983,
+        "step_index_correct": 12,
+        "step_index_total": 30,
+        "step_index_accuracy": 0.4,
+        "ord_constraints_satisfied": 5,
+        "ord_total": 30,
+        "ord_constraint_accuracy": 0.1667,
+        "ord_pairwise_accuracy": 0.6099
+      },
+      "learned_stdlib": {
+        "protocol_count": 6,
+        "ed_correct": 22,
+        "ed_total": 36,
+        "ed_accuracy": 0.6111,
+        "ed_wilson_95_ci": [
+          0.4486,
+          0.7522
+        ],
+        "ed_balanced_accuracy": 0.4444,
+        "step_index_correct": 17,
+        "step_index_total": 30,
+        "step_index_accuracy": 0.5667,
+        "ord_constraints_satisfied": 5,
+        "ord_total": 30,
+        "ord_constraint_accuracy": 0.1667,
+        "ord_pairwise_accuracy": 0.6099
+      }
+    },
+    "bioprobench": {
+      "spdx_license": "CC-BY-NC-4.0",
+      "eval_only": true,
+      "raw_err_count": 1200,
+      "raw_ord_count": 1161,
+      "lowered_err_records": 160,
+      "lowered_ord_records": 100,
+      "rule_baseline": {
+        "protocol_count": 260,
+        "ed_correct": 122,
+        "ed_total": 160,
+        "ed_accuracy": 0.7625,
+        "ed_wilson_95_ci": [
+          0.6909,
+          0.8218
+        ],
+        "ed_balanced_accuracy": 0.0,
+        "step_index_correct": 0,
+        "step_index_total": 38,
+        "step_index_accuracy": 0.0,
+        "ord_constraints_satisfied": 6,
+        "ord_total": 100,
+        "ord_constraint_accuracy": 0.06,
+        "ord_pairwise_accuracy": 0.5065
+      },
+      "learned_stdlib": {
+        "protocol_count": 260,
+        "ed_correct": 120,
+        "ed_total": 160,
+        "ed_accuracy": 0.75,
+        "ed_wilson_95_ci": [
+          0.6776,
+          0.8107
+        ],
+        "ed_balanced_accuracy": 0.0998,
+        "step_index_correct": 2,
+        "step_index_total": 38,
+        "step_index_accuracy": 0.0526,
+        "ord_constraints_satisfied": 6,
+        "ord_total": 100,
+        "ord_constraint_accuracy": 0.06,
+        "ord_pairwise_accuracy": 0.5065
+      }
+    },
+    "bioplanner": {
+      "spdx_license": "MIT",
+      "eval_only": true,
+      "protocols_parsed": 6,
+      "rule_baseline": {
+        "protocol_count": 6,
+        "ed_correct": 25,
+        "ed_total": 36,
+        "ed_accuracy": 0.6944,
+        "ed_wilson_95_ci": [
+          0.5314,
+          0.82
+        ],
+        "ed_balanced_accuracy": 0.7755,
+        "step_index_correct": 17,
+        "step_index_total": 30,
+        "step_index_accuracy": 0.5667,
+        "ord_constraints_satisfied": 15,
+        "ord_total": 30,
+        "ord_constraint_accuracy": 0.5,
+        "ord_pairwise_accuracy": 0.6591
+      },
+      "learned_stdlib": {
+        "protocol_count": 6,
+        "ed_correct": 25,
+        "ed_total": 36,
+        "ed_accuracy": 0.6944,
+        "ed_wilson_95_ci": [
+          0.5314,
+          0.82
+        ],
+        "ed_balanced_accuracy": 0.5946,
+        "step_index_correct": 18,
+        "step_index_total": 30,
+        "step_index_accuracy": 0.6,
+        "ord_constraints_satisfied": 15,
+        "ord_total": 30,
+        "ord_constraint_accuracy": 0.5,
+        "ord_pairwise_accuracy": 0.6591
+      }
+    },
+    "opentrons": {
+      "spdx_license": "Apache-2.0",
+      "eval_only": false,
+      "protocols_parsed": 10,
+      "rule_baseline": {
+        "protocol_count": 10,
+        "ed_correct": 41,
+        "ed_total": 60,
+        "ed_accuracy": 0.6833,
+        "ed_wilson_95_ci": [
+          0.5577,
+          0.7869
+        ],
+        "ed_balanced_accuracy": 0.7481,
+        "step_index_correct": 32,
+        "step_index_total": 50,
+        "step_index_accuracy": 0.64,
+        "ord_constraints_satisfied": 40,
+        "ord_total": 50,
+        "ord_constraint_accuracy": 0.8,
+        "ord_pairwise_accuracy": 0.7521
+      },
+      "learned_stdlib": {
+        "protocol_count": 10,
+        "ed_correct": 42,
+        "ed_total": 60,
+        "ed_accuracy": 0.7,
+        "ed_wilson_95_ci": [
+          0.5749,
+          0.801
+        ],
+        "ed_balanced_accuracy": 0.7,
+        "step_index_correct": 33,
+        "step_index_total": 50,
+        "step_index_accuracy": 0.66,
+        "ord_constraints_satisfied": 40,
+        "ord_total": 50,
+        "ord_constraint_accuracy": 0.8,
+        "ord_pairwise_accuracy": 0.7521
+      }
+    }
+  },
+  "downloaded_files": {
+    "wlp": [
+      {
+        "file": "protocol_103.txt",
+        "bytes": 3336,
+        "sha256": "ccf2c4851c86541cea1c911281f2885a4424aa96c3c1ffcbc8b0174efe0c779d"
+      },
+      {
+        "file": "protocol_103.ann",
+        "bytes": 12172,
+        "sha256": "6c3d860c07f0af3c7fb2c941a2f893bfa2909819c436ec3ac350912d6a389f28"
+      },
+      {
+        "file": "protocol_106.txt",
+        "bytes": 1989,
+        "sha256": "520c5fc5b43034e0851866f82109997c1ab160eb5c4b54effdb84f78a2bac3cc"
+      },
+      {
+        "file": "protocol_106.ann",
+        "bytes": 4587,
+        "sha256": "06aeaa19106f259639a9566f6c93e9c0ee9b3de747c11f42cb0398ca25b68706"
+      },
+      {
+        "file": "protocol_122.txt",
+        "bytes": 2342,
+        "sha256": "35ddfd52e24a6528e51410c44ce7ff92092c160ad92cf944f09424c0ee9839d3"
+      },
+      {
+        "file": "protocol_122.ann",
+        "bytes": 6881,
+        "sha256": "9802b9b463a65133cbccf6fb4f429f8f96ff0b67f9b60263444445ae8ad6a55f"
+      },
+      {
+        "file": "protocol_132.txt",
+        "bytes": 2305,
+        "sha256": "c0665c9cc18c7c122ed73a8f05d5769969dae8043e9f02111ecc53bf52897724"
+      },
+      {
+        "file": "protocol_132.ann",
+        "bytes": 7981,
+        "sha256": "fbb8e85ee5b03592ca6e14611604fba1e27d2ab037764477de6b75b6a2f5a3cf"
+      },
+      {
+        "file": "protocol_156.txt",
+        "bytes": 977,
+        "sha256": "628b6cd7a4c9eb2bd4d8e01aa0fff3d97db71167bf1dfd6357a98edd640b0c4b"
+      },
+      {
+        "file": "protocol_156.ann",
+        "bytes": 4043,
+        "sha256": "e4ebfd14d42149e61eabf81324ce8b4113b7f8e91e8b2487f22bd947b31e4d20"
+      },
+      {
+        "file": "protocol_161.txt",
+        "bytes": 768,
+        "sha256": "b3f6a0c08ee174716adfb478794a5d2c2b694159f62dfcc89997acfb8cba1f0e"
+      },
+      {
+        "file": "protocol_161.ann",
+        "bytes": 1980,
+        "sha256": "a5c9ede65bbc028263d21576737357a4a605dbc0a179de91504a4485e85bfb85"
+      }
+    ],
+    "bioprobench": [
+      {
+        "file": "ERR_test.json",
+        "bytes": 888047,
+        "sha256": "371fad1216ca589a97088c5a7ceb7e2c5c40cd0c88e2224a149ac5a9eaae939e"
+      },
+      {
+        "file": "ORD_test.json",
+        "bytes": 2778442,
+        "sha256": "91d3e6641d6d05b23032529a86345b7d581774231d122898d42ccbbd57d1a6fb"
+      }
+    ],
+    "bioplanner": [
+      {
+        "file": "10051.json",
+        "bytes": 7997,
+        "sha256": "4a6cba3f6265ae4a0a9178f39faef6a986f2a0d7f22156a5edb2c8458e12113d"
+      },
+      {
+        "file": "1007.json",
+        "bytes": 8548,
+        "sha256": "092a3c8b819d5e912e75597539e459d4d827bf13f6d5b80ea3df4532905073e5"
+      },
+      {
+        "file": "10157.json",
+        "bytes": 3881,
+        "sha256": "009b72e78668946e8d4b98f4ca6a655cadd7c95280785e008b1084a8a1cfb58f"
+      },
+      {
+        "file": "10279.json",
+        "bytes": 3525,
+        "sha256": "818d0daa834ddfeadf99fbbae3f733c05b30ad43e7884cbaf9021b67f859b364"
+      },
+      {
+        "file": "10606.json",
+        "bytes": 5701,
+        "sha256": "903e31729bae5f414ae13e0e5d23951b0c034ab021413a2ab9f475ae4c145c3d"
+      },
+      {
+        "file": "1073.json",
+        "bytes": 2590,
+        "sha256": "d37d009af2ebe2d971baadbf7684721441e2de837ef8fe9771d026e7d1304d40"
+      }
+    ],
+    "opentrons": [
+      {
+        "file": "v6_simpleV6.json",
+        "bytes": 34400,
+        "sha256": "296b971925ae9b4cb4e5710afda0cec00458d18bb453df7d7a4dc9b88e28eb3e"
+      },
+      {
+        "file": "v6_tempAndMagModuleCommands.json",
+        "bytes": 32618,
+        "sha256": "a08e3648a86ba68b31bb812ce991945030033c6ccf1ee8b3161fce828faaab89"
+      },
+      {
+        "file": "v6_heaterShakerCommands.json",
+        "bytes": 32801,
+        "sha256": "0d128492998e1b5d81f82c767fa62bc2caebb6cd6a65f2f424e930c4a0f66a4d"
+      },
+      {
+        "file": "v6_transferSettings.json",
+        "bytes": 287835,
+        "sha256": "a35a82be7e04a6750bfe6896d355ac296b01e661adc12c55a88aca6eb772821d"
+      },
+      {
+        "file": "v7_simpleV7.json",
+        "bytes": 34719,
+        "sha256": "82134aa0cb6b75fec8a6675262d02149863fc5290e7a80aabf2df16bc2e94f2e"
+      },
+      {
+        "file": "v7_moveLabware.json",
+        "bytes": 30719,
+        "sha256": "ccc70657750e4d31c5e0251ce5685487babc5b301c4eca01934fadd1abab8b03"
+      },
+      {
+        "file": "v8_simpleV8.json",
+        "bytes": 34297,
+        "sha256": "a29437ec512f7742fb6b5fee82b9c457955bb92feb3c0c82bdce6fe6c691029a"
+      },
+      {
+        "file": "v8_simpleFlexV8.json",
+        "bytes": 34389,
+        "sha256": "60fe4ca1dfda9b926d1d8efe470a7188803ee194331a105e81dbdd8a64083dc0"
+      },
+      {
+        "file": "00222e.ot2.apiv2.py.json",
+        "bytes": 8686,
+        "sha256": "2136e5c8fcd4407af2a3db4f6d1e7935885bf0d08ed4ab5bda94283f112b0872"
+      },
+      {
+        "file": "002af3.ot2.apiv2.py.json",
+        "bytes": 179134,
+        "sha256": "f0e76973be115e658b01b79fd7c54a96ba2095185b455672529f33ac8c2529a2"
+      }
+    ]
+  }
+}

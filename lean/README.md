@@ -18,4 +18,4 @@ cd lean
 lake build
 ```
 
-Zero external dependencies, `0 sorry`, `0 axiom`, and 12 compile-time `#guard` checks.
+Zero external dependencies, `0 sorry`, no user axioms (uses standard Lean kernel axioms `propext` and `Quot.sound` only), and 12 compile-time `#guard` checks.

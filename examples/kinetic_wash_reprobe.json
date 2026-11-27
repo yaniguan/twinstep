@@ -1,0 +1,10 @@
+[
+  {"type": "transfer", "source": "reservoir:assay_buffer", "dest": "plate1:C1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:assay_buffer", "dest": "plate1:C2", "volume": 100, "unit": "uL"},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
+  {"type": "wash", "plate": "plate1", "volume": 300, "unit": "uL", "cycles": 3},
+  {"type": "transfer", "source": "reservoir:chromogen_substrate", "dest": "plate1:C1", "volume": 100, "unit": "uL"},
+  {"type": "transfer", "source": "reservoir:chromogen_substrate", "dest": "plate1:C2", "volume": 100, "unit": "uL"},
+  {"type": "incubate", "plate": "plate1", "temperature": 37, "time": 15, "time_unit": "min"},
+  {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450}
+]

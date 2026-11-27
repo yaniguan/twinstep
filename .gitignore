@@ -6,6 +6,10 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+lean/.lake/
+data/
 .venv/
 venv/
 *.jsonl
