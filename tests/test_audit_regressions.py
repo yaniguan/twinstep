@@ -413,3 +413,183 @@ def test_issue_26_inject_k_errors_and_cli_multi_fault_eval(
     assert main(["eval", str(out_k2), "--baseline"]) == 0
     report = capsys.readouterr().out
     assert "Multi-error detection:" in report
+
+
+# ---------------------------------------------------------------------------
+# Issue #28: Multi-fault missing_step recall & schema-invalid order scanning
+# ---------------------------------------------------------------------------
+
+
+def test_issue_28_predict_multi_errors_missing_step_and_partial_valid_scan() -> None:
+    from twinstep.baseline import predict_multi_errors
+
+    # Unmixed multi-reagent well + missing final read + wrong_unit
+    steps_missing_mix_and_read = [
+        {
+            "type": "transfer",
+            "source": "reservoir:buf",
+            "dest": "plate1:A1",
+            "volume": 100,
+            "unit": "mL",
+        },
+        {
+            "type": "transfer",
+            "source": "reservoir:dye",
+            "dest": "plate1:A1",
+            "volume": 50,
+            "unit": "uL",
+        },
+        {
+            "type": "incubate",
+            "plate": "plate1",
+            "temperature": 37,
+            "time": 15,
+            "time_unit": "min",
+        },
+    ]
+    mpred = predict_multi_errors(steps_missing_mix_and_read)
+    assert "wrong_unit" in mpred["labels"]
+    assert mpred["labels"].count("missing_step") >= 1
+
+    # Schema-invalid step at index 0 must NOT abort order-violation scan on remaining steps
+    steps_with_schema_error_and_swap = [
+        {
+            "type": "transfer",
+            "source": "reservoir:buf",
+            "dest": "plate1:B1",
+            "volume": 50,
+            "unit": "L",
+        },
+        {
+            "type": "mix",
+            "well": "plate1:A1",
+            "volume": 50,
+            "cycles": 3,
+            "unit": "uL",
+        },
+        {
+            "type": "transfer",
+            "source": "reservoir:buf",
+            "dest": "plate1:A1",
+            "volume": 100,
+            "unit": "uL",
+        },
+        {"type": "read", "plate": "plate1", "mode": "absorbance", "wavelength": 450},
+    ]
+    mpred2 = predict_multi_errors(steps_with_schema_error_and_swap)
+    assert mpred2["labels"] == ["wrong_unit", "swap_order"]
+    assert mpred2["step_indices"] == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# Issue #32: Native stepbot multi-well & standalone delay + stdlib YAML import
+# ---------------------------------------------------------------------------
+
+
+def test_issue_32_from_stepbot_dict_multiwell_delay_and_yaml_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from twinstep.interop import from_stepbot_yaml
+    from twinstep.schema import IncubateStep, TransferStep
+
+    native_sb = {
+        "metadata": {"name": "native_elisa"},
+        "steps": [
+            {
+                "transfer": {
+                    "src": "reservoir:A1",
+                    "dst": ["plate1:A1", "plate1:A2"],
+                    "volume": 100,
+                }
+            },
+            {"delay": {"minutes": 10}},
+        ],
+    }
+    parsed = from_stepbot_dict(native_sb)
+    assert parsed.protocol_id == "native_elisa"
+    assert len(parsed.steps) == 3
+    assert isinstance(parsed.steps[0], TransferStep) and parsed.steps[0].dest == "plate1:A1"
+    assert isinstance(parsed.steps[1], TransferStep) and parsed.steps[1].dest == "plate1:A2"
+    assert isinstance(parsed.steps[2], IncubateStep) and parsed.steps[2].time == 10.0
+
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    yaml_text = "\n".join(
+        [
+            "---",
+            "metadata:",
+            "  name: stdlib_stepbot",
+            "steps:",
+            "  - transfer:",
+            "      src: reservoir:A1",
+            "      dst:",
+            "        - plate1:B1",
+            "        - plate1:B2",
+            "      volume: 80",
+            "  - temperature:",
+            "      target: 42",
+            "      plate: plate1",
+            "  - delay:",
+            "      minutes: 15",
+            "...",
+        ]
+    )
+    proto_yaml = from_stepbot_yaml(yaml_text)
+    assert proto_yaml.protocol_id == "stdlib_stepbot"
+    assert len(proto_yaml.steps) == 3
+    assert isinstance(proto_yaml.steps[2], IncubateStep)
+    assert proto_yaml.steps[2].temperature == 42.0
+    assert proto_yaml.steps[2].time == 15.0
+
+
+# ---------------------------------------------------------------------------
+# Issue #33: Non-strawman DPO negatives & difficulty-stratified dataset export
+# ---------------------------------------------------------------------------
+
+
+def test_issue_33_structured_dpo_mpo_gdpo_and_export_contrastive_dataset(
+    tmp_path: Path,
+) -> None:
+    import json
+    from twinstep.dependencies import find_dependencies
+    from twinstep.formats import export_contrastive_dataset, format_record
+    from twinstep.injectors import generate_dataset, make_clean_record
+    from twinstep.schema import Protocol, TransferStep
+
+    commuting = Protocol(
+        "two_independent_fills",
+        (
+            TransferStep("reservoir:buf", "plate1:A1", 100, "uL"),
+            TransferStep("reservoir:buf", "plate1:A2", 100, "uL"),
+        ),
+    )
+    ds = generate_dataset([commuting], n_twins=3, n_clean=1, n_ordering=0, seed=0)
+    dpo_corrupted = [format_record(r, fmt="dpo") for r in ds if r["label"] != "clean"]
+    assert all("difficulty" in d for d in dpo_corrupted)
+    assert all(json.loads(d["rejected"])["label"] != "clean" for d in dpo_corrupted)
+
+    # Clean commuting protocol never uses a valid reversed commuting permutation as rejected!
+    assert find_dependencies(commuting.steps) == []
+    clean_dpo = format_record(make_clean_record(commuting).to_dict(), fmt="dpo")
+    rej_clean = json.loads(clean_dpo["rejected"])
+    assert rej_clean["label"] != "swap_order"
+    eval_rej = evaluate_records(
+        [{"id": "c0", "task": "error_repair", "correct_steps": commuting.to_dicts()}],
+        [{"id": "c0", "repaired_steps": rej_clean["repaired_steps"]}],
+    )["error_repair"]
+    assert eval_rej["dependency_equivalent"] == 0
+
+    protocols = [load_protocol(p) for p in sorted(EXAMPLES_DIR.glob("*.json"))]
+    out_gdpo = tmp_path / "contrastive_gdpo.jsonl"
+    exported = export_contrastive_dataset(
+        protocols,
+        fmt="gdpo",
+        n_twins=6,
+        seed=0,
+        include_compound=True,
+        include_saboteurs=True,
+        output_path=out_gdpo,
+    )
+    assert out_gdpo.is_file()
+    tiers = {item["difficulty"] for item in exported}
+    assert {"easy", "medium", "hard", "hard_saboteur"} <= tiers

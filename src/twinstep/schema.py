@@ -18,7 +18,22 @@ VALID_TIME_UNITS = ("min", "s")
 
 _EXTERNAL_PREFIXES = ("reservoir", "stock", "trough", "waste")
 _BARE_WELL_RE = re.compile(r"^[A-Ha-h](?:[1-9]|1[0-2])$")
-_INT_RE = re.compile(r"^[+-]?\d+$")
+_INT_RE = re.compile(r"^[+-]?\d(?:_?\d)*$")
+_FLOAT_RE = re.compile(
+    r"^[+-]?(?:\d(?:_?\d)*(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?"
+    r"|\.\d(?:_?\d)*(?:[eE][+-]?\d(?:_?\d)*)?)$"
+)
+_DOUBLE_ESCAPE_MAP: dict[str, str] = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "0": "\0",
+    "b": "\b",
+    "f": "\f",
+}
 
 
 def _require_nonempty_str(value: Any, field: str) -> str:
@@ -51,33 +66,40 @@ def _require_positive_int(value: Any, field: str) -> int:
     return value
 
 
-def canonical_location(location: str) -> str:
-    """Normalize well/plate/reservoir strings so 'a1', 'A1', and 'plate1:A1' match."""
+def canonical_plate(plate: str) -> str:
+    """Canonicalize a plate identifier case-insensitively."""
+    return plate.strip().lower()
+
+
+def canonical_location(location: str, default_plate: str = "plate1") -> str:
+    """Normalize well/plate/reservoir strings so 'a1', 'A1', and 'Plate1:A1' match."""
     loc = location.strip()
     if ":" in loc:
         prefix, rest = loc.split(":", 1)
-        prefix = prefix.strip()
+        prefix_norm = canonical_plate(prefix)
         rest = rest.strip()
-        if prefix.lower() in _EXTERNAL_PREFIXES:
-            return f"{prefix.lower()}:{rest.lower()}"
-        return f"{prefix}:{rest.upper()}"
+        if prefix_norm in _EXTERNAL_PREFIXES:
+            return f"{prefix_norm}:{rest.lower()}"
+        return f"{prefix_norm}:{rest.upper()}"
     if _BARE_WELL_RE.match(loc):
-        return f"plate1:{loc.upper()}"
+        return f"{canonical_plate(default_plate)}:{loc.upper()}"
     if loc.lower() in _EXTERNAL_PREFIXES:
         return loc.lower()
-    return loc
+    return canonical_plate(loc)
 
 
-def _well_plate_or_none(well_str: str) -> str | None:
+def _well_plate_or_none(
+    well_str: str, default_plate: str | None = "plate1"
+) -> str | None:
     loc = well_str.strip()
     if ":" in loc:
         prefix, _ = loc.split(":", 1)
-        prefix = prefix.strip()
-        if prefix.lower() in _EXTERNAL_PREFIXES:
+        prefix_norm = canonical_plate(prefix)
+        if prefix_norm in _EXTERNAL_PREFIXES:
             return None
-        return prefix
+        return prefix_norm
     if _BARE_WELL_RE.match(loc):
-        return "plate1"
+        return canonical_plate(default_plate) if default_plate is not None else None
     return None
 
 
@@ -208,8 +230,8 @@ class WashStep:
             clean_plate = _require_nonempty_str(self.plate, "plate")
             object.__setattr__(self, "plate", clean_plate)
         if clean_well is not None and clean_plate is not None:
-            w_plate = _well_plate_or_none(clean_well)
-            if w_plate != clean_plate:
+            w_plate = _well_plate_or_none(clean_well, default_plate=clean_plate)
+            if w_plate != canonical_plate(clean_plate):
                 raise ValueError(
                     f"wash step plate {clean_plate!r} conflicts with well {clean_well!r}"
                 )
@@ -370,31 +392,151 @@ def _strip_inline_comment(raw: str) -> str:
     return raw.rstrip()
 
 
+def _unescape_double_quoted(inner: str) -> str:
+    out: list[str] = []
+    idx = 0
+    n = len(inner)
+    while idx < n:
+        ch = inner[idx]
+        if ch == "\\" and idx + 1 < n:
+            nxt = inner[idx + 1]
+            if nxt in _DOUBLE_ESCAPE_MAP:
+                out.append(_DOUBLE_ESCAPE_MAP[nxt])
+                idx += 2
+                continue
+            if nxt == "x" and idx + 3 < n:
+                hex2 = inner[idx + 2 : idx + 4]
+                if all(c in "0123456789abcdefABCDEF" for c in hex2):
+                    out.append(chr(int(hex2, 16)))
+                    idx += 4
+                    continue
+            if nxt == "u" and idx + 5 < n:
+                hex4 = inner[idx + 2 : idx + 6]
+                if all(c in "0123456789abcdefABCDEF" for c in hex4):
+                    out.append(chr(int(hex4, 16)))
+                    idx += 6
+                    continue
+        out.append(ch)
+        idx += 1
+    return "".join(out)
+
+
+def _try_unquote_yaml_str(text: str) -> str | None:
+    if len(text) < 2:
+        return None
+    if text[0] == '"' and text[-1] == '"':
+        inner = text[1:-1]
+        escaped = False
+        for ch in inner:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                return None
+        if escaped:
+            return None
+        return _unescape_double_quoted(inner)
+    if text[0] == "'" and text[-1] == "'":
+        inner = text[1:-1]
+        idx = 0
+        while idx < len(inner):
+            if inner[idx] == "'":
+                if idx + 1 < len(inner) and inner[idx + 1] == "'":
+                    idx += 2
+                    continue
+                return None
+            idx += 1
+        return inner.replace("''", "'")
+    return None
+
+
+def _split_flow_items(inner: str) -> list[str]:
+    parts: list[str] = []
+    buf: list[str] = []
+    in_single = False
+    in_double = False
+    escaped = False
+    depth = 0
+    for ch in inner:
+        if escaped:
+            escaped = False
+            buf.append(ch)
+            continue
+        if ch == "\\" and in_double:
+            escaped = True
+            buf.append(ch)
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            buf.append(ch)
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+            buf.append(ch)
+        elif not in_single and not in_double:
+            if ch in "[{":
+                depth += 1
+                buf.append(ch)
+            elif ch in "]}":
+                depth -= 1
+                buf.append(ch)
+            elif ch == "," and depth == 0:
+                parts.append("".join(buf))
+                buf = []
+            else:
+                buf.append(ch)
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf))
+    return parts
+
+
 def _parse_scalar(raw: str) -> Any:
     text = _strip_inline_comment(raw).strip()
-    if text in ("null", "~", ""):
+    unquoted = _try_unquote_yaml_str(text)
+    if unquoted is not None:
+        return unquoted
+    if text in ("null", "Null", "NULL", "~", ""):
         return None
-    if text in ("true", "True"):
+    if text in ("true", "True", "TRUE"):
         return True
-    if text in ("false", "False"):
+    if text in ("false", "False", "FALSE"):
         return False
-    if len(text) >= 2 and (
-        (text.startswith('"') and text.endswith('"'))
-        or (text.startswith("'") and text.endswith("'"))
-    ):
-        quote = text[0]
-        inner = text[1:-1]
-        if quote == '"':
-            return inner.replace('\\"', '"').replace("\\\\", "\\")
-        return inner.replace("''", "'")
+    if text in (".inf", "+.inf", ".Inf", "+.Inf", ".INF", "+.INF"):
+        return float("inf")
+    if text in ("-.inf", "-.Inf", "-.INF"):
+        return float("-inf")
+    if text in (".nan", ".NaN", ".NAN"):
+        return float("nan")
+    if len(text) >= 2 and text[0] == "[" and text[-1] == "]":
+        inner_list = text[1:-1].strip()
+        if not inner_list:
+            return []
+        return [
+            _parse_scalar(item)
+            for item in _split_flow_items(inner_list)
+            if item.strip()
+        ]
+    if len(text) >= 2 and text[0] == "{" and text[-1] == "}":
+        inner_map = text[1:-1].strip()
+        if not inner_map:
+            return {}
+        flow_map: dict[str, Any] = {}
+        for item in _split_flow_items(inner_map):
+            if not item.strip():
+                continue
+            k, v = _split_yaml_key_val(item.strip())
+            flow_map[k] = _parse_scalar(v)
+        return flow_map
     if _INT_RE.fullmatch(text):
-        return int(text)
-    try:
-        val = float(text)
-        if math.isfinite(val):
-            return val
-    except ValueError:
-        pass
+        return int(text.replace("_", ""))
+    if _FLOAT_RE.fullmatch(text):
+        try:
+            return float(text.replace("_", ""))
+        except ValueError:
+            pass
     return text
 
 
@@ -403,113 +545,187 @@ def _line_indent(line: str) -> int:
     return len(expanded) - len(expanded.lstrip(" "))
 
 
-def _split_yaml_key_val(text: str) -> tuple[str, str]:
+def _find_yaml_key_colon(text: str) -> int | None:
     in_single = False
     in_double = False
+    escaped = False
+    depth = 0
     for idx, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_double:
+            escaped = True
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == ":" and not in_single and not in_double:
-            if idx + 1 == len(text) or text[idx + 1].isspace():
-                return text[:idx].strip(), text[idx + 1 :]
-    raise ValueError(f"invalid YAML key-value line: {text!r}")
+            in_double = not in_single and not in_double
+        elif not in_single and not in_double:
+            if ch in "[{":
+                depth += 1
+            elif ch in "]}":
+                depth = max(0, depth - 1)
+            elif ch == ":" and depth == 0:
+                if idx + 1 == len(text) or text[idx + 1].isspace():
+                    return idx
+    return None
+
+
+def _split_yaml_key_val(text: str) -> tuple[str, str]:
+    colon_idx = _find_yaml_key_colon(text)
+    if colon_idx is None:
+        raise ValueError(f"invalid YAML key-value line: {text!r}")
+    raw_key = text[:colon_idx].strip()
+    if not raw_key:
+        raise ValueError(f"empty YAML mapping key in line: {text!r}")
+    unquoted_key = _try_unquote_yaml_str(raw_key)
+    key = unquoted_key if unquoted_key is not None else raw_key
+    return key, text[colon_idx + 1 :]
 
 
 def _parse_simple_yaml(text: str) -> Any:
     """Minimal YAML parser for protocol lists and mappings when PyYAML is unavailable."""
     cleaned_lines: list[tuple[int, str]] = []
+    doc_started = False
     for raw_line in text.splitlines():
         uncommented = _strip_inline_comment(raw_line)
-        if not uncommented.strip():
+        stripped = uncommented.strip()
+        if not stripped:
             continue
-        cleaned_lines.append((_line_indent(uncommented), uncommented.strip()))
+        indent = _line_indent(uncommented)
+        if indent == 0 and stripped == "---":
+            if doc_started or cleaned_lines:
+                raise ValueError("multiple YAML documents are not supported")
+            doc_started = True
+            continue
+        if indent == 0 and stripped == "...":
+            break
+        cleaned_lines.append((indent, stripped))
 
     if not cleaned_lines:
         raise ValueError("empty YAML document")
 
-    first_indent, first_content = cleaned_lines[0]
-    if first_content == "-" or first_content.startswith("- "):
-        items, next_idx = _parse_yaml_list(cleaned_lines, 0, first_indent)
-        if next_idx < len(cleaned_lines):
-            raise ValueError(f"unexpected YAML content at: {cleaned_lines[next_idx][1]!r}")
-        return items
+    first_indent = cleaned_lines[0][0]
+    node, next_idx = _parse_yaml_node(cleaned_lines, 0, first_indent)
+    if next_idx < len(cleaned_lines):
+        raise ValueError(f"unexpected YAML content at: {cleaned_lines[next_idx][1]!r}")
+    return node
 
+
+def _parse_yaml_node(
+    lines: list[tuple[int, str]],
+    start: int,
+    node_indent: int,
+) -> tuple[Any, int]:
+    _, content = lines[start]
+    if content == "-" or content.startswith("- "):
+        return _parse_yaml_list(lines, start, node_indent)
+    return _parse_yaml_mapping(lines, start, node_indent)
+
+
+def _parse_yaml_mapping(
+    lines: list[tuple[int, str]],
+    start: int,
+    map_indent: int,
+) -> tuple[dict[str, Any], int]:
     mapping: dict[str, Any] = {}
-    idx = 0
-    root_indent = first_indent
-    while idx < len(cleaned_lines):
-        indent, content = cleaned_lines[idx]
-        if indent != root_indent:
+    idx = start
+    while idx < len(lines):
+        indent, content = lines[idx]
+        if indent < map_indent:
+            break
+        if indent != map_indent:
             raise ValueError(
-                f"unexpected YAML indentation ({indent} != {root_indent}): {content!r}"
+                f"unexpected YAML indentation ({indent} != {map_indent}): {content!r}"
             )
+        if content == "-" or content.startswith("- "):
+            break
         key, raw_rest = _split_yaml_key_val(content)
         rest = raw_rest.strip()
         if rest:
             mapping[key] = _parse_scalar(rest)
             idx += 1
         else:
-            if idx + 1 >= len(cleaned_lines) or cleaned_lines[idx + 1][0] < indent:
+            if idx + 1 >= len(lines) or lines[idx + 1][0] < indent:
                 mapping[key] = None
                 idx += 1
             else:
-                child_indent, child_first = cleaned_lines[idx + 1]
-                if child_first == "-" or child_first.startswith("- "):
-                    items, idx = _parse_yaml_list(cleaned_lines, idx + 1, child_indent)
+                child_indent, child_first = lines[idx + 1]
+                if child_indent == indent and (
+                    child_first == "-" or child_first.startswith("- ")
+                ):
+                    items, idx = _parse_yaml_list(lines, idx + 1, child_indent)
                     mapping[key] = items
                 elif child_indent > indent:
-                    sub_map: dict[str, Any] = {}
-                    idx += 1
-                    while idx < len(cleaned_lines) and cleaned_lines[idx][0] == child_indent:
-                        s_key, s_rest = _split_yaml_key_val(cleaned_lines[idx][1])
-                        sub_map[s_key] = _parse_scalar(s_rest)
-                        idx += 1
-                    mapping[key] = sub_map
+                    child_val, idx = _parse_yaml_node(lines, idx + 1, child_indent)
+                    mapping[key] = child_val
                 else:
-                    raise ValueError(f"expected indented block after '{key}:'")
-    return mapping
+                    mapping[key] = None
+                    idx += 1
+    return mapping, idx
 
 
 def _parse_yaml_list(
     lines: list[tuple[int, str]],
     start: int,
     list_indent: int,
-) -> tuple[list[dict[str, Any]], int]:
-    items: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    item_key_indent: int | None = None
+) -> tuple[list[Any], int]:
+    items: list[Any] = []
     idx = start
     while idx < len(lines):
         indent, content = lines[idx]
         if indent < list_indent:
             break
-        if indent == list_indent and (content == "-" or content.startswith("- ")):
-            if current is not None:
-                items.append(current)
-            current = {}
-            item_key_indent = None
-            rest = content[1:].strip()
-            if rest:
-                key, val = _split_yaml_key_val(rest)
-                current[key] = _parse_scalar(val)
+        if indent != list_indent or not (content == "-" or content.startswith("- ")):
+            break
+        after_dash = content[1:]
+        rest = after_dash.strip()
+        if not rest:
             idx += 1
-        elif current is not None and indent > list_indent:
-            if item_key_indent is None:
-                item_key_indent = indent
-            elif indent != item_key_indent:
+            if idx < len(lines) and lines[idx][0] > list_indent:
+                elem, idx = _parse_yaml_node(lines, idx, lines[idx][0])
+                items.append(elem)
+            else:
+                items.append(None)
+            continue
+
+        if _find_yaml_key_colon(rest) is None:
+            items.append(_parse_scalar(rest))
+            idx += 1
+            continue
+
+        spaces_after_dash = len(after_dash) - len(after_dash.lstrip(" "))
+        first_key_indent = list_indent + 1 + spaces_after_dash
+        key, raw_val = _split_yaml_key_val(rest)
+        val_str = raw_val.strip()
+        item_map: dict[str, Any] = {}
+        idx += 1
+        if val_str:
+            item_map[key] = _parse_scalar(val_str)
+        elif idx < len(lines) and lines[idx][0] > first_key_indent:
+            child_val, idx = _parse_yaml_node(lines, idx, lines[idx][0])
+            item_map[key] = child_val
+        elif (
+            idx < len(lines)
+            and lines[idx][0] == first_key_indent
+            and (lines[idx][1] == "-" or lines[idx][1].startswith("- "))
+        ):
+            child_val, idx = _parse_yaml_list(lines, idx, lines[idx][0])
+            item_map[key] = child_val
+        else:
+            item_map[key] = None
+
+        if idx < len(lines) and lines[idx][0] > list_indent:
+            sib_indent = lines[idx][0]
+            if sib_indent != first_key_indent:
                 raise ValueError(
                     f"inconsistent YAML mapping indentation "
-                    f"({indent} != {item_key_indent}): {content!r}"
+                    f"({sib_indent} != {first_key_indent}): {lines[idx][1]!r}"
                 )
-            key, val = _split_yaml_key_val(content)
-            current[key] = _parse_scalar(val)
-            idx += 1
-        else:
-            break
-    if current is not None:
-        items.append(current)
+            more_map, idx = _parse_yaml_mapping(lines, idx, sib_indent)
+            item_map.update(more_map)
+        items.append(item_map)
     return items, idx
 
 
@@ -557,6 +773,7 @@ __all__ = [
     "WashStep",
     "asdict",
     "canonical_location",
+    "canonical_plate",
     "load_protocol",
     "step_from_dict",
     "steps_from_list",

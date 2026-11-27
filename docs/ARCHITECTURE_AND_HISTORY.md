@@ -127,4 +127,14 @@ Per-class behavior highlights the gap that learned models are meant to close: th
 
 ### Ecosystem Interfaces
 - **Peer `L3` Post-Training Stack**: Complements [`labfill`](https://github.com/yaniguan/labfill) (tensor-batched state-machine twins & single-edit repair) and supplies JSONL supervision/evaluation suites for [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain).
-- **Downstream Execution & Verification (`L2` / `L4` / Body)**: Shares step-level JSON/YAML liquid-handling representations with [`stepbot`](https://github.com/yaniguan/stepbot) (Opentrons Python API v2 compiler), [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal) (deck simulation & memory recall), [`lab-verify`](https://github.com/yaniguan/lab-verify), and [`YLM`](https://github.com/yaniguan/YLM) (`lean/LabLean`).
+- **Downstream Execution & Verification (`L2` / `L4` / Body)**: Shares step-level JSON/YAML liquid-handling representations with [`stepbot`](https://github.com/yaniguan/stepbot) (Opentrons Python API v2 compiler), [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal) (deck simulation & memory recall), [`lab-verify`](https://github.com/yaniguan/lab-verify), [`lab-attrib`](https://github.com/yaniguan/lab-attrib) (post-execution causal blame & NNLS XRD deconvolution), and [`YLM`](https://github.com/yaniguan/YLM) (`lean/LabLean`).
+
+---
+
+## 7. 15-Repository Auto-Lab Wire Contract (autolab-wire/v1)
+
+`autolab_wire.py` (`REPO_ID = "twinstep"`, `LAYER = "L3"`) exposes `process_packet(packet: dict) -> dict` for the unified 15-repository Auto-Lab packet bus (`schema_version = "autolab-wire/v1"`):
+
+- **Upstream Nodes**: Receives protocol span defaults (`parsed_spans`: `volume_ul`, `temp_c`, `duration_min`) and certified run context following [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal) (`L4` 96-well digital twin), [`stepbot`](https://github.com/yaniguan/stepbot) (`L1` Opentrons compiler & `lean-mcp/v1` executor), and [`lab-attrib`](https://github.com/yaniguan/lab-attrib) (`L4` post-run blame gate & SHA-256 ledger). Packets arriving with `halted == True` return unchanged.
+- **Layer `L3` Gate & Twin Synthesis**: Instantiates a 4-step `Protocol` (`transfer -> mix -> incubate -> read`), computes minimal RAW/WAR/stage-barrier edges via `twinstep.dependencies.find_dependencies`, validates any supplied `candidate_step_order` against `TwinStepLean.violated_dag_edge_rejected` (blocking invalid permutations such as `read` before `incubate` with `halt_reason = "L3_TWINSTEP_DAG_BLOCK"`), and generates deterministic error twins via `twinstep.injectors.generate_dataset`.
+- **Downstream Nodes**: Populates `out["error_twins"]` (`step_count`, `dag_edges`, `corrupted_twin_count`, `fault_types`, and `token_lengths` with `>= 4` integers in `48..240`) for [`labfill`](https://github.com/yaniguan/labfill) sequence packing and [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain) gated RLVR/SFT updates, while appending audit records to `out["trace"]` and `out["bottom_reasoning_traces"]` (`invariant = "violated_dag_edge_rejected"`).

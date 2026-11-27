@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 import re
 from typing import Any
 
-from twinstep.dependencies import canonical_well, is_well_ref
+from twinstep.dependencies import canonical_well, infer_default_plate, is_well_ref
 from twinstep.schema import (
     IncubateStep,
     MixStep,
@@ -15,7 +16,9 @@ from twinstep.schema import (
     Step,
     TransferStep,
     WashStep,
+    _parse_simple_yaml,
     step_from_dict,
+    steps_from_list,
 )
 
 _IDENT_CLEAN_RE = re.compile(r"[^A-Za-z0-9_]")
@@ -65,11 +68,12 @@ def to_stepbot_dict(
 ) -> dict[str, Any]:
     """Export a ``twinstep`` Protocol into a ``stepbot`` YAML/JSON protocol mapping."""
     proto = _as_protocol(protocol)
+    default_plate = infer_default_plate(proto.steps)
     plates: dict[str, str] = {}
     reagents: dict[str, str] = {}
 
     def map_loc(loc: str) -> str:
-        norm = canonical_well(loc)
+        norm = canonical_well(loc, default_plate)
         if not is_well_ref(loc):
             if norm not in reagents:
                 col = len(reagents) + 1
@@ -185,47 +189,133 @@ def to_stepbot_dict(
     return out
 
 
+def _float_field(d: dict[str, Any], keys: tuple[str, ...], default: float) -> float:
+    for key in keys:
+        val = d.get(key)
+        if val is not None:
+            return float(val)
+    return default
+
+
+def _int_field(d: dict[str, Any], keys: tuple[str, ...], default: int) -> int:
+    for key in keys:
+        val = d.get(key)
+        if val is not None:
+            return int(val)
+    return default
+
+
+def _extract_delay_duration(dp: Any) -> tuple[float, str]:
+    if isinstance(dp, (int, float)) and not isinstance(dp, bool):
+        return max(1.0, float(dp)), "s"
+    if isinstance(dp, dict):
+        if dp.get("minutes") is not None:
+            return float(dp["minutes"]), "min"
+        if dp.get("min") is not None:
+            return float(dp["min"]), "min"
+        if dp.get("duration_min") is not None:
+            return float(dp["duration_min"]), "min"
+        if dp.get("hours") is not None:
+            return float(dp["hours"]) * 60.0, "min"
+        if dp.get("seconds") is not None:
+            return float(dp["seconds"]), "s"
+        if dp.get("s") is not None:
+            return float(dp["s"]), "s"
+        if dp.get("duration_s") is not None:
+            return float(dp["duration_s"]), "s"
+        if dp.get("time") is not None:
+            t_unit = str(dp.get("time_unit", dp.get("unit", "min")))
+            if t_unit not in ("min", "s"):
+                t_unit = "min"
+            return float(dp["time"]), t_unit
+    return 1.0, "min"
+
+
 def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
-    """Reconstruct a ``twinstep`` Protocol from a ``to_stepbot_dict`` mapping."""
-    meta = stepbot_data.get("metadata") or {}
-    proto_id = str(meta.get("name") or "stepbot_protocol")
+    """Reconstruct a ``twinstep`` Protocol from a ``stepbot`` or rehearsal mapping."""
+    if not isinstance(stepbot_data, dict):
+        raise ValueError("stepbot_data must be a mapping")
+
+    meta_raw = stepbot_data.get("metadata") or stepbot_data.get("protocol") or {}
+    meta = meta_raw if isinstance(meta_raw, dict) else {}
+    proto_id = str(
+        stepbot_data.get("protocol_id")
+        or meta.get("name")
+        or stepbot_data.get("name")
+        or "stepbot_protocol"
+    )
 
     well_to_reagent: dict[str, str] = {}
     for liq_name, entry in (stepbot_data.get("liquids") or {}).items():
-        if isinstance(entry, dict) and isinstance(entry.get("wells"), str):
-            desc = str(entry.get("description") or f"reservoir:{liq_name}")
-            well_to_reagent[entry["wells"]] = desc
+        if not isinstance(entry, dict):
+            continue
+        desc = str(entry.get("description") or f"reservoir:{liq_name}")
+        wells_field = entry.get("wells")
+        if isinstance(wells_field, str):
+            well_to_reagent[wells_field] = desc
+        elif isinstance(wells_field, (list, tuple)):
+            for w_entry in wells_field:
+                well_to_reagent[str(w_entry)] = desc
 
     def unmap_loc(ref: str) -> str:
         return well_to_reagent.get(ref, ref)
+
+    def unmap_locs(raw: Any) -> list[str]:
+        if isinstance(raw, (list, tuple)):
+            return [unmap_loc(str(x)) for x in raw]
+        return [unmap_loc(str(raw))]
+
+    def expand_transfers(
+        src_raw: Any, dst_raw: Any, volume: float, unit: str = "uL"
+    ) -> list[TransferStep]:
+        srcs = unmap_locs(src_raw)
+        dsts = unmap_locs(dst_raw)
+        if len(srcs) == len(dsts):
+            pairs = list(zip(srcs, dsts))
+        elif len(srcs) == 1:
+            pairs = [(srcs[0], d) for d in dsts]
+        elif len(dsts) == 1:
+            pairs = [(s, dsts[0]) for s in srcs]
+        else:
+            pairs = [(s, d) for s in srcs for d in dsts]
+        u_lit: Any = unit if unit in ("uL", "mL") else "uL"
+        return [
+            TransferStep(source=s, dest=d, volume=volume, unit=u_lit) for s, d in pairs
+        ]
 
     raw_steps = stepbot_data.get("steps") or []
     out_steps: list[Step] = []
     idx = 0
     while idx < len(raw_steps):
         item = raw_steps[idx]
-        if "transfer" in item:
-            tp = item["transfer"]
-            out_steps.append(
-                TransferStep(
-                    source=unmap_loc(str(tp["src"])),
-                    dest=unmap_loc(str(tp["dst"])),
-                    volume=float(tp["volume"]),
-                    unit="uL",
+        if not isinstance(item, dict):
+            idx += 1
+            continue
+        if ("transfer" in item and isinstance(item["transfer"], dict)) or (
+            "distribute" in item and isinstance(item["distribute"], dict)
+        ):
+            tp = item["transfer"] if "transfer" in item else item["distribute"]
+            vol = _float_field(tp, ("volume", "volume_ul"), 50.0)
+            unit = str(tp.get("unit", "uL"))
+            out_steps.extend(
+                expand_transfers(
+                    tp.get("src", tp.get("source")),
+                    tp.get("dst", tp.get("dest")),
+                    vol,
+                    unit,
                 )
             )
             idx += 1
-        elif "mix" in item:
+        elif "mix" in item and isinstance(item["mix"], dict):
             mp = item["mix"]
-            well_raw = mp.get("wells", mp.get("well"))
-            out_steps.append(
-                MixStep(
-                    well=unmap_loc(str(well_raw)),
-                    volume=float(mp["volume"]),
-                    cycles=int(mp["reps"]),
-                    unit="uL",
-                )
-            )
+            well_raw = mp.get("wells", mp.get("well", mp.get("dst", mp.get("location"))))
+            vol = _float_field(mp, ("volume", "volume_ul"), 50.0)
+            reps = _int_field(mp, ("reps", "repetitions", "cycles"), 3)
+            unit_m: Any = str(mp.get("unit", "uL"))
+            if unit_m not in ("uL", "mL"):
+                unit_m = "uL"
+            for w in unmap_locs(well_raw):
+                out_steps.append(MixStep(well=w, volume=vol, cycles=reps, unit=unit_m))
             idx += 1
         elif "comment" in item:
             text = str(item["comment"])
@@ -239,7 +329,9 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                         time_unit=inc_m.group("unit"),  # type: ignore[arg-type]
                     )
                 )
-                if idx + 1 < len(raw_steps) and "delay" in raw_steps[idx + 1]:
+                if idx + 1 < len(raw_steps) and isinstance(raw_steps[idx + 1], dict) and (
+                    "delay" in raw_steps[idx + 1]
+                ):
                     idx += 2
                 else:
                     idx += 1
@@ -272,10 +364,229 @@ def from_stepbot_dict(stepbot_data: dict[str, Any]) -> Protocol:
                 idx += 1
                 continue
             idx += 1
+        elif "delay" in item:
+            dp = item["delay"]
+            t_val, t_unit = _extract_delay_duration(dp)
+            temp_d = (
+                _float_field(dp, ("temperature", "temp_c"), 25.0)
+                if isinstance(dp, dict)
+                else 25.0
+            )
+            plate_d = (
+                str(dp["plate"])
+                if isinstance(dp, dict) and dp.get("plate") is not None
+                else None
+            )
+            out_steps.append(
+                IncubateStep(
+                    plate=plate_d,
+                    temperature=temp_d,
+                    time=t_val,
+                    time_unit=t_unit,  # type: ignore[arg-type]
+                )
+            )
+            idx += 1
+        elif any(k in item for k in ("incubate", "temperature", "thermocycler", "temp_module")):
+            mod_key = next(
+                k for k in ("incubate", "temperature", "thermocycler", "temp_module") if k in item
+            )
+            cfg = item[mod_key] if isinstance(item[mod_key], dict) else {}
+            temp_val = _float_field(cfg, ("temperature", "temp_c", "target", "block_temp"), 37.0)
+            plate_t = str(cfg["plate"]) if cfg.get("plate") is not None else None
+            has_inline_dur = any(
+                k in cfg
+                for k in ("minutes", "min", "seconds", "s", "time", "duration_min", "duration_s")
+            )
+            if has_inline_dur:
+                t_val, t_unit = _extract_delay_duration(cfg)
+                idx += 1
+            elif (
+                idx + 1 < len(raw_steps)
+                and isinstance(raw_steps[idx + 1], dict)
+                and "delay" in raw_steps[idx + 1]
+            ):
+                t_val, t_unit = _extract_delay_duration(raw_steps[idx + 1]["delay"])
+                idx += 2
+            else:
+                t_val, t_unit = 1.0, "min"
+                idx += 1
+            out_steps.append(
+                IncubateStep(
+                    plate=plate_t,
+                    temperature=temp_val,
+                    time=t_val,
+                    time_unit=t_unit,  # type: ignore[arg-type]
+                )
+            )
+        elif "wash" in item and isinstance(item["wash"], dict):
+            wp = item["wash"]
+            w_unit: Any = str(wp.get("unit", "uL"))
+            if w_unit not in ("uL", "mL"):
+                w_unit = "uL"
+            out_steps.append(
+                WashStep(
+                    plate=str(wp["plate"]) if wp.get("plate") is not None else None,
+                    well=unmap_loc(str(wp["well"])) if wp.get("well") is not None else None,
+                    volume=_float_field(wp, ("volume", "volume_ul"), 300.0),
+                    cycles=_int_field(wp, ("cycles", "reps", "repetitions"), 3),
+                    unit=w_unit,
+                )
+            )
+            idx += 1
+        elif "read" in item and isinstance(item["read"], dict):
+            rp = item["read"]
+            wl_raw = rp.get("wavelength", rp.get("wavelength_nm"))
+            out_steps.append(
+                ReadStep(
+                    plate=str(rp.get("plate", "plate1")),
+                    mode=str(rp.get("mode", "absorbance")),
+                    wavelength=int(wl_raw) if wl_raw is not None else None,
+                )
+            )
+            idx += 1
+        elif any(k in item for k in ("type", "op", "action")):
+            op_name = str(item.get("type") or item.get("op") or item.get("action")).lower()
+            if op_name in (
+                "pick_up_tip",
+                "drop_tip",
+                "pick_tip",
+                "seal",
+                "unseal",
+                "home",
+                "comment",
+            ):
+                idx += 1
+                continue
+            if (
+                op_name == "aspirate"
+                and idx + 1 < len(raw_steps)
+                and isinstance(raw_steps[idx + 1], dict)
+                and str(
+                    raw_steps[idx + 1].get("op") or raw_steps[idx + 1].get("action") or ""
+                ).lower()
+                == "dispense"
+            ):
+                disp = raw_steps[idx + 1]
+                vol = _float_field(
+                    item,
+                    ("volume", "volume_ul"),
+                    _float_field(disp, ("volume", "volume_ul"), 50.0),
+                )
+                src_a = item.get("well", item.get("src", item.get("source", "reservoir:reagent")))
+                dst_d = disp.get("well", disp.get("dst", disp.get("dest", "plate1:A1")))
+                out_steps.extend(
+                    expand_transfers(src_a, dst_d, vol, str(item.get("unit", "uL")))
+                )
+                idx += 2
+                continue
+            if op_name in ("transfer", "distribute", "pipette", "dispense_reagent"):
+                vol = _float_field(item, ("volume", "volume_ul"), 50.0)
+                out_steps.extend(
+                    expand_transfers(
+                        item.get("source", item.get("src")),
+                        item.get("dest", item.get("dst")),
+                        vol,
+                        str(item.get("unit", "uL")),
+                    )
+                )
+            elif op_name == "discard":
+                vol = _float_field(item, ("volume", "volume_ul"), 50.0)
+                out_steps.extend(
+                    expand_transfers(
+                        item.get("source", item.get("src")),
+                        "waste:trash",
+                        vol,
+                        str(item.get("unit", "uL")),
+                    )
+                )
+            elif op_name == "mix":
+                w_raw = item.get("well", item.get("wells", item.get("dst")))
+                vol = _float_field(item, ("volume", "volume_ul"), 50.0)
+                reps = _int_field(item, ("cycles", "reps", "repetitions"), 3)
+                u_f: Any = str(item.get("unit", "uL"))
+                if u_f not in ("uL", "mL"):
+                    u_f = "uL"
+                for w in unmap_locs(w_raw):
+                    out_steps.append(MixStep(well=w, volume=vol, cycles=reps, unit=u_f))
+            elif op_name in ("incubate", "delay", "wait", "thermocycle"):
+                temp_f = _float_field(item, ("temperature", "temp_c"), 25.0)
+                t_val, t_unit = _extract_delay_duration(item)
+                plate_f = str(item["plate"]) if item.get("plate") is not None else None
+                out_steps.append(
+                    IncubateStep(
+                        plate=plate_f,
+                        temperature=temp_f,
+                        time=t_val,
+                        time_unit=t_unit,  # type: ignore[arg-type]
+                    )
+                )
+            elif op_name == "wash":
+                u_w: Any = str(item.get("unit", "uL"))
+                if u_w not in ("uL", "mL"):
+                    u_w = "uL"
+                out_steps.append(
+                    WashStep(
+                        plate=str(item["plate"]) if item.get("plate") is not None else None,
+                        well=(
+                            unmap_loc(str(item["well"]))
+                            if item.get("well") is not None
+                            else None
+                        ),
+                        volume=_float_field(item, ("volume", "volume_ul"), 300.0),
+                        cycles=_int_field(item, ("cycles", "reps", "repetitions"), 3),
+                        unit=u_w,
+                    )
+                )
+            elif op_name in ("read", "measure"):
+                wl_f = item.get("wavelength", item.get("wavelength_nm"))
+                mode_f = str(item.get("mode", "absorbance"))
+                if wl_f is None and mode_f.lower() != "luminescence":
+                    wl_f = 450
+                out_steps.append(
+                    ReadStep(
+                        plate=str(item.get("plate", "plate1")),
+                        mode=mode_f,
+                        wavelength=int(wl_f) if wl_f is not None else None,
+                    )
+                )
+            else:
+                out_steps.append(step_from_dict(item))
+            idx += 1
         else:
             idx += 1
 
     return Protocol(protocol_id=proto_id, steps=tuple(out_steps))
+
+
+def from_stepbot_yaml(yaml_text_or_path: str | Path) -> Protocol:
+    """Load a ``stepbot`` YAML file or raw YAML string into a ``twinstep`` Protocol."""
+    if isinstance(yaml_text_or_path, Path):
+        text = yaml_text_or_path.read_text(encoding="utf-8")
+        fallback_id = yaml_text_or_path.stem
+    else:
+        raw_str = str(yaml_text_or_path)
+        if "\n" not in raw_str and Path(raw_str).is_file():
+            p = Path(raw_str)
+            text = p.read_text(encoding="utf-8")
+            fallback_id = p.stem
+        else:
+            text = raw_str
+            fallback_id = "stepbot_yaml_protocol"
+
+    try:
+        import yaml
+    except ImportError:
+        parsed = _parse_simple_yaml(text)
+    else:
+        parsed = _parse_simple_yaml(text) if yaml is None else yaml.safe_load(text)
+
+    if isinstance(parsed, list):
+        return Protocol(protocol_id=fallback_id, steps=tuple(steps_from_list(parsed)))
+    if isinstance(parsed, dict):
+        if "metadata" not in parsed and "protocol_id" not in parsed and "name" not in parsed:
+            parsed = {**parsed, "protocol_id": fallback_id}
+        return from_stepbot_dict(parsed)
+    raise ValueError("stepbot YAML must parse to a step list or protocol mapping")
 
 
 def to_labfill_dict(
@@ -292,11 +603,12 @@ def to_labfill_dict(
     operations for tensorized tip-state checking in ``labfill``.
     """
     proto = _as_protocol(protocol)
+    default_plate = infer_default_plate(proto.steps)
     well_names: list[str] = []
     well_index: dict[str, int] = {}
 
     def get_well_idx(loc: str) -> int:
-        norm = canonical_well(loc)
+        norm = canonical_well(loc, default_plate)
         if norm not in well_index:
             well_index[norm] = len(well_names)
             well_names.append(norm)
@@ -458,3 +770,12 @@ def from_labfill_dict(labfill_data: dict[str, Any]) -> Protocol:
                 )
             )
     return Protocol(protocol_id=proto_id, steps=tuple(steps))
+
+
+__all__ = [
+    "from_labfill_dict",
+    "from_stepbot_dict",
+    "from_stepbot_yaml",
+    "to_labfill_dict",
+    "to_stepbot_dict",
+]

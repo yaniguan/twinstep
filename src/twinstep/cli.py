@@ -13,7 +13,7 @@ from typing import Any, TextIO
 from twinstep.baseline import predict_record
 from twinstep.evaluate import evaluate_records, format_evaluation_report
 from twinstep.formats import EXPORT_FORMATS, format_records
-from twinstep.injectors import generate_dataset
+from twinstep.injectors import DIFFICULTY_FILTERS, generate_dataset
 from twinstep.schema import load_protocol
 
 
@@ -75,6 +75,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         n_clean=args.clean,
         n_ordering=args.ordering,
         k_errors=args.k_errors,
+        difficulty=args.difficulty,
+        include_saboteurs=bool(args.include_saboteurs),
     )
     records = format_records(raw_records, fmt=args.format)
     out_path = Path(args.output) if args.output and args.output != "-" else None
@@ -144,7 +146,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         choices=EXPORT_FORMATS,
         default="raw",
-        help="Output record format: raw (default), dpo, sft, or rlvr.",
+        help="Output record format: raw (default), dpo, mpo, gdpo, sft, or rlvr.",
+    )
+    gen.add_argument(
+        "--difficulty",
+        choices=DIFFICULTY_FILTERS,
+        default="all",
+        help="Filter twins by difficulty tier: all (default), easy, medium, hard, hard_saboteur.",
+    )
+    gen.add_argument(
+        "--include-saboteurs",
+        action="store_true",
+        help="Include stealth evolutionary saboteur hard-negative twins.",
     )
     gen.add_argument("--seed", type=int, default=0, help="Deterministic RNG seed (default: 0).")
     gen.add_argument("-o", "--output", default=None, help="Output JSONL path (default: stdout).")

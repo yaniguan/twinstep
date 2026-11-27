@@ -19,7 +19,9 @@ from community_extensions import (  # noqa: E402
     check_gen1_bitmask_gate,
     check_gen2_stateful_lean_gate,
     check_twin_step_order,
+    is_topological_order_unique,
     run_benchmark,
+    transitive_reduction,
 )
 from community_extensions.saboteur_evolver import dag_edge_satisfied  # noqa: E402
 
@@ -86,7 +88,14 @@ def test_twinstep_lean_module_hygiene() -> None:
     for required in (
         "def dagEdgeSatisfied",
         "def checkTwinStepOrder",
+        "def transitiveReduction",
         "theorem violated_dag_edge_rejected",
+        "theorem dagEdgeSatisfied_trans",
+        "theorem checkTwinStepOrder_bijective",
+        "theorem checkTwinStepOrder_nodup_and_mem_iff",
+        "theorem checkTwinStepOrder_transitiveReduction_iff",
+        "theorem transitiveReduction_irredundant",
+        "theorem topological_order_unique_iff_contiguous_chain",
         "theorem sabotaged_candidate_rejected",
     ):
         assert required in src
@@ -111,3 +120,47 @@ def test_run_benchmark_10_generations_150_candidates() -> None:
 
     with pytest.raises(ValueError):
         run_benchmark(generations=0)
+
+    # Issue #33: Curated hard negatives preserve clean_steps and sabotaged_steps
+    assert len(report["curated_hard_negatives"]) == report["curated_hard_negative_count"]
+    first_hn = report["curated_hard_negatives"][0]
+    assert "clean_steps" in first_hn and "sabotaged_steps" in first_hn
+    assert first_hn["clean_steps"] != first_hn["sabotaged_steps"]
+
+
+def test_issue_31_transitive_reduction_and_uniqueness_mirror_parity() -> None:
+    import itertools
+    from twinstep.dependencies import _transitive_reduction
+
+    # Chorded chain: (0, 2) and (0, 3) are implied by 0 -> 1 -> 2 -> 3
+    chain_chords = [(0, 1), (1, 2), (0, 2), (2, 3), (0, 3)]
+    red_chain = transitive_reduction(4, chain_chords)
+    assert red_chain == [(0, 1), (1, 2), (2, 3)]
+    assert sorted(red_chain) == list(_transitive_reduction(4, set(chain_chords)))
+    assert is_topological_order_unique(4, chain_chords) is True
+
+    valid_chain_orders = [
+        list(perm)
+        for perm in itertools.permutations(range(4))
+        if check_twin_step_order(4, list(perm), chain_chords).passed
+    ]
+    assert valid_chain_orders == [[0, 1, 2, 3]]
+
+    # Diamond DAG: 0 -> {1, 2} -> 3, plus implied chord (0, 3); missing (1, 2)
+    diamond = [(0, 1), (0, 2), (1, 3), (2, 3), (0, 3)]
+    red_diamond = transitive_reduction(4, diamond)
+    assert sorted(red_diamond) == list(_transitive_reduction(4, set(diamond)))
+    assert is_topological_order_unique(4, diamond) is False
+
+    for perm in itertools.permutations(range(4)):
+        order = list(perm)
+        assert (
+            check_twin_step_order(4, order, red_diamond).passed
+            == check_twin_step_order(4, order, diamond).passed
+        )
+    valid_diamond_orders = [
+        list(perm)
+        for perm in itertools.permutations(range(4))
+        if check_twin_step_order(4, list(perm), diamond).passed
+    ]
+    assert valid_diamond_orders == [[0, 1, 2, 3], [0, 2, 1, 3]]

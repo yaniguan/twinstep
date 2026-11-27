@@ -11,6 +11,7 @@ formalized in `TwinStepLean`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 import json
 import random
@@ -81,6 +82,17 @@ class HardNegativeTwinPair:
     clean_steps: tuple[dict[str, Any], ...]
     sabotaged_steps: tuple[dict[str, Any], ...]
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol_name": self.protocol_name,
+            "generation": self.generation,
+            "mutation_ops": list(self.mutation_ops),
+            "evaded_gates": list(self.evaded_gates),
+            "violated_lean_rules": list(self.violated_lean_rules),
+            "clean_steps": [dict(st) for st in self.clean_steps],
+            "sabotaged_steps": [dict(st) for st in self.sabotaged_steps],
+        }
+
 
 def index_of_step(step_id: int, order: list[int] | tuple[int, ...]) -> int | None:
     """Mirror of `TwinStepLean.indexOfStep`."""
@@ -100,6 +112,55 @@ def dag_edge_satisfied(
     if pu is None or pv is None:
         return False
     return pu < pv
+
+
+def _dag_reachable_aux(
+    edges: Sequence[tuple[int, int]],
+    fuel: int,
+    u: int,
+    v: int,
+) -> bool:
+    if fuel <= 0:
+        return False
+    return any(
+        e[0] == u and (e[1] == v or _dag_reachable_aux(edges, fuel - 1, e[1], v))
+        for e in edges
+    )
+
+
+def dag_reachable(edges: Sequence[tuple[int, int]], u: int, v: int) -> bool:
+    """Mirror of `TwinStepLean.dagReachable` (`u ->+ v` over forward edges)."""
+    return _dag_reachable_aux(edges, max(0, v - u), u, v)
+
+
+def transitive_reduction(
+    n_steps: int,
+    edges: Sequence[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Mirror of `TwinStepLean.transitiveReduction`."""
+    _ = n_steps
+    dedup: list[tuple[int, int]] = []
+    for edge in reversed(edges):
+        if edge not in dedup:
+            dedup.append(edge)
+    dedup.reverse()
+    return [
+        edge
+        for edge in dedup
+        if not any(
+            e1[0] == edge[0] and e1[1] != edge[1] and dag_reachable(edges, e1[1], edge[1])
+            for e1 in edges
+        )
+    ]
+
+
+def is_topological_order_unique(
+    n_steps: int,
+    edges: Sequence[tuple[int, int]],
+) -> bool:
+    """Mirror of `TwinStepLean.topological_order_unique_iff_contiguous_chain`."""
+    reduced = set(transitive_reduction(n_steps, edges))
+    return all((i, i + 1) in reduced for i in range(max(0, n_steps - 1)))
 
 
 def check_twin_step_order(
@@ -612,14 +673,7 @@ def evolve_saboteurs(
         },
         "curated_hard_negative_count": len(curated_map),
         "curated_hard_negatives": [
-            {
-                "protocol_name": pair.protocol_name,
-                "generation": pair.generation,
-                "mutation_ops": list(pair.mutation_ops),
-                "evaded_gates": list(pair.evaded_gates),
-                "violated_lean_rules": list(pair.violated_lean_rules),
-            }
-            for pair in list(curated_map.values())[:8]
+            pair.to_dict() for pair in curated_map.values()
         ],
         "generation_history": generation_history,
     }

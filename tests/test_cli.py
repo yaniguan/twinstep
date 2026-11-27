@@ -135,3 +135,56 @@ def test_cli_export_formats_dpo_sft_rlvr_and_eval(
     metrics = json.loads(capsys.readouterr().out)
     assert metrics["error_detection"]["accuracy"] == 1.0
     assert metrics["ordering"]["constraint_accuracy"] == 1.0
+
+
+# Issue #33: Stratified difficulty filtering, saboteur export, and MPO / GDPO CLI schemas
+def test_issue_33_cli_difficulty_saboteurs_and_mpo_gdpo_formats(tmp_path: Path) -> None:
+    proto_arg = str(EXAMPLES_DIR / "mix_incubate_read.json")
+
+    mpo_path = tmp_path / "mpo.jsonl"
+    assert (
+        main(
+            [
+                "generate",
+                proto_arg,
+                "--n",
+                "4",
+                "--include-saboteurs",
+                "--format",
+                "mpo",
+                "-o",
+                str(mpo_path),
+            ]
+        )
+        == 0
+    )
+    mpo_recs = [json.loads(line) for line in mpo_path.read_text(encoding="utf-8").splitlines()]
+    assert any(r["difficulty"] == "hard_saboteur" for r in mpo_recs)
+    assert all("rejected_candidates" in r and len(r["rejected_candidates"]) >= 1 for r in mpo_recs)
+
+    gdpo_path = tmp_path / "gdpo_sab.jsonl"
+    assert (
+        main(
+            [
+                "generate",
+                proto_arg,
+                "--n",
+                "3",
+                "--include-saboteurs",
+                "--difficulty",
+                "hard_saboteur",
+                "--format",
+                "gdpo",
+                "-o",
+                str(gdpo_path),
+            ]
+        )
+        == 0
+    )
+    gdpo_recs = [json.loads(line) for line in gdpo_path.read_text(encoding="utf-8").splitlines()]
+    assert len(gdpo_recs) >= 2
+    for rec in gdpo_recs:
+        assert rec["difficulty"] == "hard_saboteur"
+        weights = rec["reward_weights"]
+        assert set(weights) == {"detection", "localization", "repair_dag", "lean_gate"}
+        assert sum(weights.values()) == pytest.approx(1.0)

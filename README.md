@@ -37,10 +37,13 @@ Full code-level architecture, dependency/injector rules, benchmark tables, and h
 
 ```text
 twinstep/
+├── autolab_wire.py              # Layer L3 Auto-Lab 15-repo wire node (autolab-wire/v1)
 ├── examples/                    # Bundled valid liquid-handling protocols (JSON)
 │   ├── dilution_series.json
 │   ├── mix_incubate_read.json
 │   └── wash_and_read.json
+├── community_extensions/        # Evolutionary protocol saboteur red-teaming (Idea #15)
+├── lean/                        # Lean 4.36.0 causal DAG & stateful saboteur proofs (TwinStepLean)
 ├── src/twinstep/
 │   ├── __init__.py              # Public API exports
 │   ├── schema.py                # Frozen step dataclasses & JSON + stdlib YAML loaders
@@ -53,7 +56,7 @@ twinstep/
 │   └── cli.py                   # `twinstep generate | baseline | eval` CLI
 ├── docs/
 │   └── ARCHITECTURE_AND_HISTORY.md
-└── tests/                       # Schema, dependency, injector, baseline/eval, CLI, and audit tests
+└── tests/                       # Schema, dependency, injector, baseline/eval, CLI, wire, and audit tests
 ```
 
 ## Quickstart
@@ -149,6 +152,14 @@ Each injector in `twinstep.injectors` is seeded with `--seed` and guaranteed to 
 - Checks per-step-type volume bounds (`[1, 300] uL` for well `transfer`/`mix`, `[50, 2000] uL` for `wash`), unit mismatches (including `< 5 mL` well transfers and `0.5 uL` washes), temperature bounds (`[4, 95] C`), duration bounds (`[5, 600] s` or `[1, 180] min`), and optical wavelength bounds (`[190, 1100] nm`).
 - Flags uninitialized wells, unmixed multi-reagent wells prior to `transfer`/`incubate`/`wash`/`read`, or a missing `read` step as `missing_step`.
 - Reconstructs step ordering via cycle-partitioned topological sort over well liquid-flow edges and plate-stage barriers.
+
+## 15-Repository Auto-Lab Wire Contract (autolab-wire/v1)
+
+`autolab_wire.py` (`REPO_ID = "twinstep"`, `LAYER = "L3"`) implements `process_packet(packet: dict) -> dict` for the 15-repository [Robot AI Auto-Lab](https://github.com/yaniguan/auto-lab) wire pipeline:
+
+- **Upstream links**: Consumes protocol span parameters (`parsed_spans`: `volume_ul`, `temp_c`, `duration_min`) alongside upstream pre-execution and post-run state from [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal) (`L4`), [`stepbot`](https://github.com/yaniguan/stepbot) (`L1`), and [`lab-attrib`](https://github.com/yaniguan/lab-attrib) (`L4` causal blame & SHA-256 certified ledger). Halted upstream packets (`halted == True`) pass through unchanged.
+- **Causal DAG & twin synthesis**: Constructs a validated `twinstep` `Protocol` (`transfer -> mix -> incubate -> read`), extracts transitive-reduced dependency edges via `twinstep.dependencies.find_dependencies`, enforces the Lean `violated_dag_edge_rejected` invariant on any `candidate_step_order` (halting with `halt_reason = "L3_TWINSTEP_DAG_BLOCK"` if violated), and synthesizes seeded corrupted twins via `twinstep.injectors.generate_dataset`.
+- **Downstream handoff**: Emits `out["error_twins"]` (`step_count`, `dag_edges`, `corrupted_twin_count`, `fault_types`, and `token_lengths` in `48..240`) directly to downstream [`labfill`](https://github.com/yaniguan/labfill) (`L3` BF16 sequence bin packing) and [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain) (`L3` anti-hack RLVR).
 
 ## Limits
 
