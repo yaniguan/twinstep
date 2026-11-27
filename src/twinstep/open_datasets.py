@@ -485,7 +485,8 @@ def parse_opentrons_json_protocol(
         if not isinstance(cmd, dict):
             continue
         ctype = str(cmd.get("commandType") or "")
-        params = cmd.get("params") if isinstance(cmd.get("params"), dict) else {}
+        raw_params = cmd.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         if ctype == "loadLabware":
             lw_id = str(params.get("labwareId") or "")
             load_name = str(params.get("loadName") or lw_id).lower()
@@ -531,7 +532,8 @@ def parse_opentrons_json_protocol(
         if not isinstance(cmd, dict):
             continue
         ctype = str(cmd.get("commandType") or "")
-        params = cmd.get("params") if isinstance(cmd.get("params"), dict) else {}
+        raw_params = cmd.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
 
         if ctype == "aspirate":
             lw_id = str(params.get("labwareId") or "source")
